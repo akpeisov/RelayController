@@ -1,0 +1,36 @@
+{
+  "mac": "C8F09E2F8F90",
+  "id": 16,
+  "name": "Svc 0",
+  "type": "BTN",
+  "events": [
+    {
+      "event": "toggle",
+      "actions": [
+        {
+          "order": 0,
+          "output": 0,
+          "action": "toggle"
+        }
+      ],
+      "acls": [
+        {
+          "type": "allow",
+          "io": "o",
+          "id": 1,
+          "state": "on"
+        }
+      ]
+    },
+    {
+      "event": "on",
+      "actions": [
+        {
+          "order": 0,
+          "output": 1,
+          "action": "on"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,272 @@
+{
+    "outputs": [
+        {
+            "id": 0,
+            "name": "Out 0",
+            "type": "t",
+            "on": 10,
+            "off": 10,
+            "state": "off",
+            "default": "off",
+            "duration": 0,
+            "timer": 10
+        },
+        {
+            "id": 1,
+            "name": "Out1",
+            "type": "s",
+            "state": "off",
+            "default": "off",
+            "timer": 0
+        },
+        {
+            "id": 2,
+            "name": "Open",
+            "type": "s",
+            "state": "off",
+            "default": "off",
+            "timer": 0,
+            "duration": 4
+        },
+        {
+            "id": 3,
+            "name": "Close",
+            "type": "s",
+            "state": "off",
+            "default": "off",
+            "timer": 4,
+            "duration": 4
+        }
+    ],
+    "inputs": [
+        {
+            "id": 0,
+            "name": "input 0",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "acl": [
+                        {
+                            "type": "allow",
+                            "id": 0,
+                            "io": "i",
+                            "state": "on"
+                        },
+                        {
+                            "type": "deny",
+                            "id": 1,
+                            "state": "off"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 0,
+                            "action": "on"
+                        },
+                        {
+                            "order": 1,
+                            "output": 1,
+                            "action": "on"
+                        },
+                        {
+                            "order": 2,
+                            "output": 2,
+                            "action": "off"
+                        },
+                        {
+                            "order": 3,
+                            "type": "wait",
+                            "duration": 5
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 1,
+            "name": "input 0",
+            "type": "SW",
+            "events": [
+                {
+                    "event": "on",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 0,
+                            "action": "on",
+                            "slaveId": 1,
+                            "duration": 3
+                        }
+                    ]
+                },
+                {
+                    "event": "off",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 0,
+                            "action": "off",
+                            "slaveId": 1
+                        }
+                    ]
+                }
+            ],
+            "state": "on"
+        },
+        {
+            "id": 2,
+            "name": "input 0",
+            "type": "INVSW",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "id": 0,
+                            "output": 0,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 5,
+            "name": "input 5",
+            "type": "SW",
+            "events": [
+                {
+                    "event": "on",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 0,
+                            "action": "on"
+                        }
+                    ]
+                },
+                {
+                    "event": "off",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 0,
+                            "action": "off"
+                        }
+                    ]
+                }
+            ],
+            "state": "on"
+        },
+        {
+            "id": 11,
+            "name": "input 11",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "id": 0,
+                            "output": 3,
+                            "action": "toggle"
+                        },
+                        {
+                            "id": 1,
+                            "type": "wait",
+                            "duration": 5
+                        },
+                        {
+                            "id": 2,
+                            "output": 2,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 10,
+            "name": "input 10",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "output": 2,
+                            "action": "toggle"
+                        },
+                        {
+                            "type": "wait",
+                            "duration": 2
+                        },
+                        {
+                            "output": 1,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 9,
+            "name": "input 9",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "id": 0,
+                            "output": 1,
+                            "action": "toggle"
+                        },
+                        {
+                            "output": 1,
+                            "action": "on",
+                            "duration": 3,
+                            "slaveId": 1
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 8,
+            "name": "input 8",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "output": 0,
+                            "slaveId": 1,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 19,
+            "name": "btn 3 slave 1",
+            "type": "BTN",
+            "slaveId": 1,
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "output": 3,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,70 @@
+{
+"outputs": [],
+"inputs": [
+    { 
+    "id": 16,
+    "name": "Svc 0",
+    "type": "BTN",
+    "events": [
+      {
+        "event": "toggle",
+        "actions": [
+          {
+            "order": 0,
+            "output": 0,
+            "action": "toggle"
+          }
+        ],
+        "acls": [
+          {
+            "type": "allow",
+            "io": "o",
+            "id": 1,
+            "state": "on"
+          }
+        ]
+      },
+      {
+        "event": "on",
+        "actions": [
+          {
+            "order": 0,
+            "output": 1,
+            "action": "on"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 0,
+    "slaveId": 1,
+    "name": "In 0 on s1",
+    "type": "SW",
+    "events": [
+      {
+        "event": "on",
+        "actions": [
+          {
+            "order": 0,
+            "output": 0,
+            "slaveId": 1,
+            "action": "on"
+          }
+        ]
+      },
+      {
+        "event": "off",
+        "actions": [
+          {
+            "order": 0,
+            "output": 0,
+            "slaveId": 1,
+            "action": "off"
+          }
+        ]
+      }
+    ]
+  }
+]
+}

@@ -1,0 +1,27 @@
+"slaves": [
+	{
+		"slaveid": 1,
+		"outputsStates": 253,
+		"outputs": [
+			{
+				"id": 0
+			}
+		],
+		"inputs": [
+			{
+				"id": 1,
+				"events": [
+				    {
+				      "event": "toggle",
+				      "actions": [
+				        {
+				          "order": 0,
+				          "output": 0,
+				          "action": "toggle"
+				        }
+				      ],
+			}
+		]		
+	}
+]
+

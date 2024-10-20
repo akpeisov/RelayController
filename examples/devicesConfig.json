@@ -1,0 +1,142 @@
+{
+    "outputs": [
+        {
+            "id": 0,
+            "name": "Out 0",
+            "type": "s",
+            "state": "off",
+            "default": "off",
+            "duration": 0,
+            "timer": 0
+        },
+        {
+            "id": 1,
+            "name": "Out 1",
+            "type": "s",
+            "state": "off",
+            "default": "off"
+        },
+        {
+            "id": 2,
+            "name": "Out 2",
+            "type": "s",
+            "state": "off",
+            "default": "off"
+        },
+        {
+            "id": 3,
+            "name": "Out 3",
+            "type": "s",
+            "state": "off",
+            "default": "off",
+            "duration": 0,
+            "timer": 0
+        }
+    ],
+    "inputs": [
+        {
+            "id": 16,
+            "name": "Svc 0",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 0,
+                            "action": "toggle"
+                        }
+                    ],
+                    "acls": [
+                        {
+                            "type": "allow",
+                            "io": "o",
+                            "id": 1,
+                            "state": "on"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 17,
+            "name": "Svc 1",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 1,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 18,
+            "name": "Svc 2",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 2,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 19,
+            "name": "Svc 3",
+            "type": "BTN",
+            "events": [
+                {
+                    "event": "toggle",
+                    "actions": [
+                        {
+                            "order": 0,
+                            "output": 3,
+                            "action": "toggle"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": 0,
+            "name": "In 0",
+            "type": "SW",
+            "events": [],
+            "events": []
+        },
+        {
+            "id": 1,
+            "name": "In 1",
+            "type": "SW",
+            "events": [],
+            "events": []
+        },
+        {
+            "id": 2,
+            "name": "In 2",
+            "type": "SW",
+            "events": [],
+            "events": []
+        },
+        {
+            "id": 3,
+            "name": "In 3",
+            "type": "SW",
+            "events": [],
+            "events": []
+        }
+    ]
+}

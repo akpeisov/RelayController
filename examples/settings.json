@@ -1,0 +1,38 @@
+{
+    "controllerType": "RCV2S",
+    "hostname": "MyDevice",
+    "description": "My device",
+    "ntpserver": "pool.ntp.org",
+    "ntpTZ": "UTC-5:00",
+    "otaurl": "https://api.akpeisov.kz/RelayController.bin",
+    "cloud": {
+        "address": "ws://192.168.4.120:8888/ws",
+        "enabled": true
+    },
+    "wifi": {
+        "enabled": true,
+        "ssid": "Alana",
+        "pass": "zxcv1234",
+        "dhcp": true
+    },
+    "eth": {
+        "enabled": true,
+        "dhcp": true,
+        "enablereset": true,
+        "resetGPIO": 5
+    },
+    "modbus": {
+        "enabled": true,
+        "mode": "master",
+        "debug": true,
+        "pollingTime": 50,
+        "slaves": [
+            1
+        ]
+    },
+    "mqtt": {
+        "enabled": true,
+        "url": "mqtt://mqtt:mqtt1@192.168.4.7"
+    },
+    "dns": "192.168.2.1"
+}

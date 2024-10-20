@@ -1,0 +1,36 @@
+	{
+	"id": 0,
+	"name": "input 0",
+	"type": "BTN",
+	"events": [{
+		"event": "toggle",
+        "acls": [{
+                    "type": "allow",
+                    "id": 0,
+                    "io": "i",
+                    "state": "on"  
+                },{
+                    "type": "deny",
+                    "id": 1,
+                    "io": "o",
+                    "state": "off"  
+                }],
+		"actions": [{
+                        "order": 0,
+                        "output": 0,
+                        "action": "on"                        
+                    },{
+                        "order": 1,
+                        "output": 1,
+                        "action": "on"                        
+                    },{
+                        "order": 2,
+                        "output": 2,
+                        "action": "off"                        
+                    },{
+                        "order": 3,
+                        "type": "wait",
+                        "duration": 5
+                    }]
+	}]	
+}
