@@ -37,7 +37,7 @@ typedef struct {
     i2c_dev_t device;
     uint8_t address;
 } devices_t;
-static devices_t devices[8];
+static devices_t devices[9];
 
 void sendTo595(uint8_t *values, uint8_t count) {
     // Функция просто отправит данные в 595 
@@ -102,6 +102,7 @@ void initHardware(SemaphoreHandle_t sem) {
         i2c = true;
         ESP_LOGI(TAG, "I2C inited. %s", getControllerTypeText(controllerType));
     } else {
+        ESP_LOGI(TAG, "I2C not inited.");
         setGPIOOut(IO_CLK);
         setGPIOOut(IO_LA595);
         setGPIOOut(IO_LA165);
@@ -209,8 +210,53 @@ void relayTask(void *pvParameter) {
     vTaskDelete(NULL);
 }
 
+void i2cScan() {
+    i2c_dev_t dev = { 0 };
+    dev.cfg.sda_io_num = SDA;
+    dev.cfg.scl_io_num = SCL;
+    dev.cfg.master.clk_speed = 100000;
+
+    esp_err_t res;
+    printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
+    printf("00:         ");
+    for (uint8_t addr = 3; addr < 0x78; addr++)
+    {
+        if (addr % 16 == 0)
+            printf("\n%.2x:", addr);
+
+        dev.addr = addr;
+        res = i2c_dev_probe(&dev, I2C_DEV_WRITE);
+
+        if (res == 0)
+            printf(" %.2x", addr);
+        else
+            printf(" --");
+    }
+    printf("\n");
+
+    // bool valid;
+    // struct tm time = {
+    //     .tm_year = 120, // years since 1900
+    //     .tm_mon  = 3,   // months since January
+    //     .tm_mday = 3,
+    //     .tm_hour = 12,
+    //     .tm_min  = 35,
+    //     .tm_sec  = 10,
+    //     .tm_wday = 0    // days since Sunday
+    // };
+    // memset(&dev, 0, sizeof(i2c_dev_t));
+    // pcf8563_init_desc(&dev, 0, SDA, SCL);        
+    // esp_err_t r = pcf8563_get_time(&dev, &time, &valid);
+    // ESP_LOGI(TAG, "pcf8563_get_time %s", esp_err_to_name(r));    
+}
+
 esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {    
+    // gpio_set_pull_mode(SDA, GPIO_PULLUP_ONLY);
+    // gpio_set_pull_mode(SCL, GPIO_PULLUP_ONLY);
+
     i2cdev_init();
+    i2cScan();
+
     esp_err_t err = ESP_FAIL;  
     *ctrlType = UNKNOWN; 
     /*
@@ -233,20 +279,29 @@ esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {
     0x41 - 9685 (face)	
     0x42 - 9685 (face)	
 
+    RCV2M
+    0x27 - 8574 (face)    
+
     0x18 - i2c-ow DS2484
 	*/
-    for (uint8_t i=0; i<8;i++)
+    for (uint8_t i=0; i<9;i++)
         memset(&devices[i].device, 0, sizeof(i2c_dev_t));
     // addresses
     devices[0].address = 0x51; // 8563 (clock)
-    devices[1].address = 0x20; // 8574 (relay)
-    devices[2].address = 0x21; // 8574 (face)
-    devices[3].address = 0x40; // 9685 (relay)
-    devices[4].address = 0x41; // 9685 (face)
+    devices[1].address = 0x20; // 8574 (relay board)
+    devices[2].address = 0x21; // 8574 (face board)
+    devices[3].address = 0x40; // 9685 (relay board)
+    devices[4].address = 0x41; // 9685 (face board)
     // big
-    devices[5].address = 0x22; // 8574 (relay)
-    devices[6].address = 0x23; // 8574 (face)
-    devices[7].address = 0x42; // 9685 (face)
+    devices[5].address = 0x22; // 8574 (relay board)
+    devices[6].address = 0x23; // 8574 (face board)
+    devices[7].address = 0x42; // 9685 (face board)
+    // medium
+    devices[8].address = 0x27; // 8574 (face board)
+
+
+    // D6MG
+    // relay 0x20, 0x22. face 0x21, 0x23
 
     // у маленького и на плате реле и на плате индикации 15 bit 9685 соединен с 7 bit 8574
 
@@ -287,32 +342,40 @@ esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {
 
     // init 8574
     uint8_t inputs;
+    // входы
     pcf8574_init_desc(&devices[1].device, devices[1].address, I2CPORT, SDA, SCL);
     err = pcf8574_port_read(&devices[1].device, &inputs);
     if (err != ESP_OK) {
+        // должен быть у всех видов контроллеров
         ESP_LOGE(TAG, "Can't read from 8574 #1. Relay board error!");
         return err;
     }
 
-    pcf8574_init_desc(&devices[2].device, devices[2].address, I2CPORT, SDA, SCL);
+    // кнопки
+    pcf8574_init_desc(&devices[2].device, devices[2].address, I2CPORT, SDA, SCL);    
     err = pcf8574_port_read(&devices[2].device, &inputs);
     if (err != ESP_OK) {
+        // должен быть у всех видов контроллеров
         ESP_LOGE(TAG, "Can't read from 8574 #2. Face board error!");
         return err;
     }
 
     // init 9685 (relay)
+    // реле
     pca9685_init_desc(&devices[3].device, devices[3].address, I2CPORT, SDA, SCL);
     err = initPCA9685(devices[3].device, false);
     if (err != ESP_OK) {
+        // должен быть у всех видов контроллеров
         ESP_LOGE(TAG, "Can't init PCA9685 #3. Relay board not connected?");
         return err;
     }            
 
     // init 9685 (face)
+    // светодиоды
     pca9685_init_desc(&devices[4].device, devices[4].address, I2CPORT, SDA, SCL);
     err = initPCA9685(devices[4].device, true);
     if (err != ESP_OK) {
+        // должен быть у всех видов контроллеров
         ESP_LOGE(TAG, "Can't init PCA9685 #4. Face board not connected?");
         return err;
     }
@@ -339,9 +402,19 @@ esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Can't init PCA9685 #7. No extra face");
         return err;
-    } else {
-        // если дошло до этого места то считаем что это большой контроллер
-        *ctrlType = RCV2B;
+    }
+    // если дошло до этого места то считаем что это большой контроллер
+    *ctrlType = RCV2B;
+
+    // есть только у medium 
+    pcf8574_init_desc(&devices[8].device, devices[8].address, I2CPORT, SDA, SCL);
+    err = pcf8574_port_read(&devices[8].device, &inputs);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Can't read from 8574 #8. RGB not present.");
+        goto exit;
+    } else {        
+        // если дошло до этого места то считаем что это средний контроллер
+        *ctrlType = RCV2M;
     }
 
 exit:
@@ -475,11 +548,16 @@ void readInputs(uint8_t *values, uint8_t count) {
     //ESP_LOGI(TAG, "readInputs cnt %d type %d", count, controllerType);
     if (controllerType == RCV1S || controllerType == RCV1B) {    
         readFrom165(values, count);        
-    } else if (controllerType == RCV2S || controllerType == RCV2M) {
+    } else if (controllerType == RCV2S || controllerType == RCV2B || controllerType == RCV2M) {
         if (count == 2) {
             values[0] = readFrom8574(1) & 0x3F;
             values[1] = readFrom8574(2) & 0x0F;
             //ESP_LOGI(TAG, "Inputs2 %d %d", values[0], values[1]);
+        } else if (count == 4) {
+            values[0] = readFrom8574(1);
+            values[1] = readFrom8574(5);
+            values[2] = readFrom8574(2);
+            values[3] = readFrom8574(6);
         }
     } else {
         // заглушка для неизвестных типов
@@ -489,7 +567,7 @@ void readInputs(uint8_t *values, uint8_t count) {
 }
 
 uint16_t readServiceButtons() { 
-    // чтение сервисных кнопок
+    // чтение сервисных кнопок (только при включении)
     // TODO : должен читать только сервисные кнопки
     // вернет 2 байта с соответствующими значениями, справа 0 бит. 1 кнопка нажата, 0 нет
     uint8_t inputs[BINPUTS];
@@ -528,6 +606,8 @@ char* getControllerTypeText(uint8_t type) {
     }
     return "UNKNOWN";
 }
+
+
 
 
 /*

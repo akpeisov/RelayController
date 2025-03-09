@@ -1019,7 +1019,7 @@ void inputsTask(void *pvParameter) {
     uint8_t inputsOld[BINPUTS] = {0xFF, 0xFF, 0xFF, 0xFF};
 	uint8_t diff[BINPUTS];
 	uint8_t inputsCnt = 2; // for RCV1S, RCV2S
-	if (controllerType == RCV1B)
+	if ((controllerType == RCV1B) || (controllerType == RCV2B))
 		inputsCnt = 4;
   //   else if (controllerType == RCV1S)
   //       inputsCnt = 2;
