@@ -28,6 +28,9 @@ static bool wsConnected = false;
 static uint8_t mbSlaveId = 0;
 static char* mbMode = "";
 
+extern const char jwt_start[] asm("_binary_jwt_pem_start");
+extern const char jwt_end[] asm("_binary_jwt_pem_end");
+
 typedef struct {
 	char name[10];
 	uint8_t outputs;
@@ -40,7 +43,7 @@ ControllerData controllersData[] = {
   {"RCV1B", 10, 16, 10},  
   {"RCV2S", 4, 6, 4},   // D4MG
   {"RCV2M", 6, 8, 6},   // D5MG
-  {"RCV2B", 0, 0, 0}  
+  {"RCV2B", 12, 16, 12}  
 };
 uint32_t serviceButtonsTime[16] = {0}; // in ms
 uint32_t inputButtonsTime[32] = {0}; // in ms
@@ -343,18 +346,67 @@ void sendInfo() {
     }    
 }
 
+void sendHello() {
+    cJSON *hello = NULL;
+    cJSON *payload = NULL;  
+    char *token = WSgetToken(getMac());
+    if (token == NULL) {
+        ESP_LOGE(TAG, "sendHello error, token is null");        
+        token = malloc(5);
+        strcpy(token, "NULL\0");
+    }
+    hello = cJSON_CreateObject();
+    payload = cJSON_CreateObject();
+
+    if (!payload || !hello) {
+        free(token);
+        ESP_LOGE(TAG, "sendHello error. payload or hello object is null");        
+        return;
+    }
+    
+    cJSON_AddStringToObject(hello, "type", "HELLO");
+    if (strcmp(token, "NULL")) {
+        cJSON_AddStringToObject(payload, "token", token);
+    } else {
+        cJSON_AddStringToObject(payload, "mac", getMac());
+    }
+    cJSON_AddStringToObject(payload, "type", "relayController");
+    if (strcmp(mbMode, "")) {
+        cJSON_AddStringToObject(payload, "mbMode", mbMode);
+        if (!strcmp(mbMode, "slave")) {
+            cJSON_AddNumberToObject(payload, "mbSlaveId", mbSlaveId);
+        }
+    }
+    //cJSON_AddItemToObject(payload, "info", getDeviceInfoJson());
+    // add slaveid 
+    cJSON_AddItemToObject(hello, "payload", payload);
+    char *hello_str = cJSON_PrintUnformatted(hello);    
+    cJSON_Delete(hello);
+    WSSendMessageForce(hello_str);
+    free(hello_str);
+    free(token);
+}
+
 void updateValues() {
     uint16_t outputs = 0;
     uint16_t inputsLeds = 0;
     uint16_t outputsLeds = 0;
+
+    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "outputs")) ||
+        !cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "inputs"))) {
+        ESP_LOGE(TAG, "bad config");
+        return;
+    }
 
     cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
     while (childOutput) {
         uint8_t slaveId = 0;
         if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")))
             slaveId = cJSON_GetObjectItem(childOutput, "slaveId")->valueint;        
-        if (cJSON_IsString(cJSON_GetObjectItem(childOutput, "state")) &&
-            cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id")) &&
+        if (!cJSON_IsString(cJSON_GetObjectItem(childOutput, "state"))) {
+            cJSON_AddStringToObject(childOutput, "state", "off");
+        }
+        if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id")) &&
             slaveId == 0) {
             //ESP_LOGI(TAG, "id %d, state %s", cJSON_GetObjectItem(childOutput, "id")->valueint, )
             if (!strcmp(cJSON_GetObjectItem(childOutput, "state")->valuestring, "on")) {
@@ -369,8 +421,10 @@ void updateValues() {
         uint8_t slaveId = 0;
         if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "slaveId")))
             slaveId = cJSON_GetObjectItem(childInput, "slaveId")->valueint;        
-        if (cJSON_IsString(cJSON_GetObjectItem(childInput, "state")) &&
-            cJSON_IsNumber(cJSON_GetObjectItem(childInput, "id")) &&
+        if (!cJSON_IsString(cJSON_GetObjectItem(childInput, "state"))) {
+            cJSON_AddStringToObject(childInput, "state", "off");
+        }
+        if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "id")) &&
             slaveId == 0) {
             if (!strcmp(cJSON_GetObjectItem(childInput, "state")->valuestring, "on"))
                 setbit(inputsLeds, cJSON_GetObjectItem(childInput, "id")->valueint);
@@ -615,13 +669,18 @@ void actionsTask(void *pvParameter) {
                     } else if (cJSON_IsNumber(cJSON_GetObjectItem(actionChild, "output")) &&
                                cJSON_IsString(cJSON_GetObjectItem(actionChild, "action"))) {
                         // action                        
-                        if (cJSON_IsNumber(cJSON_GetObjectItem(actionChild, "slaveId"))) {                            
+                        uint16_t dur = 0;
+                        if (cJSON_IsNumber(cJSON_GetObjectItem(actionChild, "duration"))) {
+                            dur = cJSON_GetObjectItem(actionChild, "duration")->valueint;                        
+                        }
+                        if (cJSON_IsNumber(cJSON_GetObjectItem(actionChild, "slaveId")) &&
+                            cJSON_GetObjectItem(actionChild, "slaveId")->valueint > 0) {
                             setRemoteOutput(cJSON_GetObjectItem(actionChild, "slaveId")->valueint, 
                                             cJSON_GetObjectItem(actionChild, "output")->valueint, 
-                                            cJSON_GetObjectItem(actionChild, "action")->valuestring, 0);
+                                            cJSON_GetObjectItem(actionChild, "action")->valuestring, dur);
                         } else {                        
                             setOutput(cJSON_GetObjectItem(actionChild, "output")->valueint, 
-                                      cJSON_GetObjectItem(actionChild, "action")->valuestring, 0);
+                                      cJSON_GetObjectItem(actionChild, "action")->valuestring, dur);
                         }
                     }
                     actionChild = actionChild->next;
@@ -790,6 +849,10 @@ void processInputEvents(uint8_t pSlaveId, uint8_t pInput, char* pEvent, uint8_t 
     if (!strcmp(pEvent, "on") || !strcmp(pEvent, "off")) {
         publishInput(pInput, pEvent, 0);    
     }   
+
+    if (pInput == 16 && !strcmp(pEvent, "long")) {
+        publishInput(pInput, pEvent, 0);    
+    }
 }
 
 void processRemoteInputEvents(uint8_t slaveId, uint8_t pInput, char* pEvent) {
@@ -919,7 +982,7 @@ void outputsTimer() {
             if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "timer"))) {
                 timer = cJSON_GetObjectItem(childOutput, "timer")->valueint;
                 if (timer > 0)
-                    timer--;                
+                    timer--; 
                 if (timer == 0) {
                     if (!strcmp(cJSON_GetObjectItem(childOutput, "state")->valuestring, "on")) {
                         cJSON_ReplaceItemInObject(childOutput, "state", cJSON_CreateString("off"));
@@ -932,6 +995,8 @@ void outputsTimer() {
                     //         cJSON_GetObjectItem(childOutput, "state")->valuestring, 0);                           
                 }
                 cJSON_ReplaceItemInObject(childOutput, "timer", cJSON_CreateNumber(timer));
+                publishOutput(0, cJSON_GetObjectItem(childOutput, "id")->valueint, 
+                              cJSON_GetObjectItem(childOutput, "state")->valuestring, timer); 
             } else {
                 cJSON_AddItemToObject(childOutput, "timer", cJSON_CreateNumber(1));
             }            
@@ -951,6 +1016,8 @@ void outputsTimer() {
                         ESP_LOGI(TAG, "outputTimer set output %d to off", cJSON_GetObjectItem(childOutput, "id")->valueint);
                         //publish(cJSON_GetObjectItem(childOutput, "id")->valueint, "OFF", 0);
                     }
+                    publishOutput(0, cJSON_GetObjectItem(childOutput, "id")->valueint, 
+                              cJSON_GetObjectItem(childOutput, "state")->valuestring, timer);                     
                 }
             }
         } 
@@ -1072,49 +1139,40 @@ void resetDefaultConfigs() {
         saveDeviceConfig();  
 }
 
-void buttonsStartUpTask(void *pvParameter) {    
-	// только для анализа нажатия при старте
-    uint8_t cnt = 0;
-    uint16_t buttons;
-    while (1) {
-        buttons = readServiceButtons();
-        if ((buttons) == 0) // ничего не нажато
-            break;
-        if (cnt++ >= 5) {
-            ESP_LOGI(TAG, "Startup buttons pressed. Buttons value %d", buttons);
-            switch (buttons & 0x0F) {
-                case 0b1001: // правая и левая кнопки
-                  wifi_init_softap();
-                  break;
-                case 0b0101: // правая и через одну
-                  resetDefaultConfigs();
-                  break;
-                case 0b0011:
-                  resetNetworkConfig();
-                default:
-                  break;
-            }            
-            break;
+bool checkServiceButtons() {
+    uint16_t btns = readServiceButtons() & 0x0F;
+    if (btns) {
+        ESP_LOGI(TAG, "Something pressed while boot... %d", btns);
+        showError(0x0F);
+        //xTaskCreate(&buttonsStartUpTask, "buttonsStartUpTask", 4096, btns, 5, NULL);
+        updateStateHW(0, 0, 0);
+        switch (btns) {
+            case 0b1001: // правая и левая кнопки
+              startSoftAP();
+              // no need reboot
+              break;
+            case 0b0101: // правая и через одну
+              resetDefaultConfigs();
+              reboot = true;
+              // need reboot
+              break;
+            case 0b0011:
+              resetNetworkConfig();
+              reboot = true;
+              // need reboot
+              break;
+            default:
+              ESP_LOGI(TAG, "switch default");
+              return false;
         }
-        vTaskDelay(1000 / portTICK_RATE_MS);    
+        return true;
     }
-
-    xTaskCreate(&inputsTask, "inputsTask", 4096, NULL, 5, NULL);
-    vTaskDelete(NULL);
+    return false;
 }
 
 void startInputTask() {
-	// проверка нажатия кнопок при запуске
-    if (readServiceButtons() && 0x0F) {
-        ESP_LOGI(TAG, "Something pressed while boot... %d", readServiceButtons() && 0x0F);
-		showError(0x0F);
-        xTaskCreate(&buttonsStartUpTask, "buttonsStartUpTask", 4096, NULL, 5, NULL);
-		updateStateHW(0, 0, 0);
-    } else {                    
-		// ничего не было нажато, можно сразу создавать таск опроса входов
-        ESP_LOGI(TAG, "Starting input task");
-        xTaskCreate(&inputsTask, "inputsTask", 4096, NULL, 5, NULL);
-    }	
+	ESP_LOGI(TAG, "Starting input task");
+    xTaskCreate(&inputsTask, "inputsTask", 4096, NULL, 5, NULL);    
 }
 
 esp_err_t getDeviceConfig(char **response) {
@@ -1558,6 +1616,15 @@ char* getDeviceConfigMsg() {
     return response;
 }
 
+// char* makeWSAnswer(const char* type, char* payload) {
+//     char *response;
+//     cJSON *json = cJSON_CreateObject();
+//     cJSON_AddItemToObject(json, "type", cJSON_CreateString(type));
+//     cJSON_AddItemToObject(json, "payload", payload);
+//     response = cJSON_PrintUnformatted(json);    
+//     return response;
+// }
+
 void updateOutput(cJSON *payload) {
     // обновление выхода в конфиге. Прилетает из сокета
     if (cJSON_IsNumber(cJSON_GetObjectItem(payload, "id"))) {
@@ -1596,6 +1663,7 @@ void updateOutput(cJSON *payload) {
 }
 
 void updateInput(cJSON *payload) {
+    ESP_LOGI(TAG, "updateInput %s", cJSON_Print(payload));
     // обновление входа в конфиге. Прилетает из сокета
     if (cJSON_IsNumber(cJSON_GetObjectItem(payload, "id"))) {
         uint8_t id = cJSON_GetObjectItem(payload, "id")->valueint;
@@ -1622,7 +1690,7 @@ void updateInput(cJSON *payload) {
 }
 
 void wsMsg(char *message) {
-	// ESP_LOGI(TAG, "wsMsg %s", message);
+	ESP_LOGI(TAG, "wsMsg %s", message);
     //ESP_LOG_BUFFER_HEXDUMP("message", message, strlen(message)+1, CONFIG_LOG_DEFAULT_LEVEL);
     char *response;
     cJSON *json = cJSON_Parse(message); 
@@ -1631,29 +1699,47 @@ void wsMsg(char *message) {
         ESP_LOGE(TAG, "Can't parse message.");
         return;
     }
+    //ESP_LOGI(TAG, "%s", message);
     if (cJSON_IsObject(cJSON_GetObjectItem(json, "payload"))) {
         payload = cJSON_GetObjectItem(json, "payload");
     }
     char *type;
     if (cJSON_IsString(cJSON_GetObjectItem(json, "type"))) {
         type = cJSON_GetObjectItem(json, "type")->valuestring;
-        if (!strcmp(type, "ALERT") && cJSON_IsString(cJSON_GetObjectItem(payload, "message"))) {
-            // если сообщение READY то он прилинкован и готов общаться
-            // если сообщение INFO то значит просто отправить информацию и ждать последующей линковки
-            if (!strcmp(cJSON_GetObjectItem(payload, "message")->valuestring, "READY")) { 
-                WSSetAuthorized();
-                response = getDeviceIOStates();
-                WSSendMessage(response);  
-                free(response);
-            }
+        if (!strcmp(type, "AUTHORIZED")) {
+            // если READY то он прилинкован и готов общаться                        
+            WSSetAuthorized();
+            sendInfo();
+            response = getDeviceIOStates();
+            WSSendMessage(response);  
+            free(response);
+        // } else if (!strcmp(type, "AUTHORIZED")) { 
+        //     // контроллера может не быть в базе, этот метод его добавит      
+        //     ESP_LOGI(TAG, "Authorized");
+        //     WSSendMessageForce("{\"type\":\"CHECK\"}");
+        } else if (!strcmp(type, "INFO")) {       
+            // запрос информации   
+            sendInfo();            
         } else if (!strcmp(type, "GETDEVICECONFIG")) {
-            response = getDeviceConfigMsg();            
-            WSSendMessageForce(response);              
+            response = getDeviceConfigMsg();
+            WSSendMessageForce(response);
             free(response);                     
         } else if (!strcmp(type, "SETDEVICECONFIG") && payload != NULL) {
+            ESP_LOGW(TAG, "Updating device config");
             if (cJSON_IsObject(payload)) {
-                cJSON_Delete(deviceConfig);
-                deviceConfig = payload;
+                SemaphoreHandle_t sem = getSemaphore();
+                if (xSemaphoreTake(sem, portMAX_DELAY) == pdTRUE) {
+                    cJSON_Delete(deviceConfig);
+                    cJSON_DetachItemFromObject(json, "payload");
+                    deviceConfig = payload;
+                    xSemaphoreGive(sem);
+                    saveDeviceConfig();
+                }
+                ESP_LOGI(TAG, "deviceConfig is object %d", cJSON_IsObject(deviceConfig));
+                WSSendMessageForce("{\"type\":\"SETDEVICECONFIG\", \"payload\": {\"message\": \"OK\"}}");
+            } else {
+                // TODO : send error to WS
+                WSSendMessageForce("{\"type\":\"SETDEVICECONFIG\", \"payload\": {\"message\": \"Ne OK\"}}");
             }
         } else if (!strcmp(type, "UPDATEOUTPUT") && payload != NULL) {
             updateOutput(payload);
@@ -1696,12 +1782,14 @@ void wsMsg(char *message) {
         } 
     }
     cJSON_Delete(json);
-
+    ESP_LOGI(TAG, "payload is object %d", cJSON_IsObject(payload));
 }
 
 void wsEvent(uint8_t event) {
     if (event == WEBSOCKET_EVENT_CONNECTED) {
         wsConnected = true;
+        //sendInfo();
+        sendHello();
     } else if (event == WEBSOCKET_EVENT_DISCONNECTED) {
         wsConnected = false;
     }
@@ -1712,8 +1800,13 @@ void initWS() {
         char *jwt = NULL;                
         char *wsURL = getSettingsValueString2("cloud", "address");
         loadTextFile("/certs/jwt.pem", &jwt);
-    	WSinit(wsURL, "relayController", &wsMsg, &wsEvent, jwt, 
-               getSettingsValueBool2("cloud", "log"), mbMode, mbSlaveId);            
+        if (jwt == NULL) {
+            // take JWT from firmware
+            uint16_t len = jwt_end - jwt_start;
+            jwt = (char*)malloc(len+1);
+            strncpy(jwt, jwt_start, len);
+        }
+    	WSinit(wsURL, &wsMsg, &wsEvent, jwt, getSettingsValueBool2("cloud", "log"));            
     }
 }
 
@@ -1920,7 +2013,7 @@ void sntpEvent() {
     ESP_LOGI(TAG, "Clock set result %s", esp_err_to_name(setClock()));    
 }
 
-void initCore(SemaphoreHandle_t sem) {
+esp_err_t initCore(SemaphoreHandle_t sem) {
 	//createSemaphore();    
     ESP_LOGI(TAG, "Hostname %s, description %s", getSettingsValueString("hostname"), getSettingsValueString("description"));
     sem_busy = sem;
@@ -1935,7 +2028,7 @@ void initCore(SemaphoreHandle_t sem) {
 	if (loadDeviceConfig() != ESP_OK) {
         ESP_LOGE(TAG, "Can't read config!");
         setRGBFace("red");
-        return;
+        return ESP_FAIL;
     }
     if (loadScheduler() != ESP_OK) {
         ESP_LOGI(TAG, "Can't read scheduler config.");
@@ -1945,11 +2038,18 @@ void initCore(SemaphoreHandle_t sem) {
     }    
     initInputs();
 	initOutputs();    
+    xTaskCreate(&serviceTask, "serviceTask", 4096, NULL, 5, NULL);    
+    if (checkServiceButtons()) {
+        setRGBFace("yellow");
+        ESP_LOGI(TAG, "Service button pressed while boot. Sevice mode...");
+        return ESP_ERR_NOT_FINISHED;
+        // чтобы сеть не стартовала и запустилась AP
+    } 
     startInputTask();
-    initScheduler();
-	xTaskCreate(&serviceTask, "serviceTask", 4096, NULL, 5, NULL);    
+    initScheduler();	
     initModBus();    
     setRGBFace("green"); // TODO : сделать зеленый когда все поднялось. И продумать цвета
+    return ESP_OK;
 }
 
 /* TODO :

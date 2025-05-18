@@ -30,9 +30,8 @@ void networkHandler(uint8_t event, uint32_t address) {
 	    initWS();
 	    initMQTT();
 	    initFTP(address);
-	} else if (!inited && (event == WIFI_EVENT_AP_STACONNECTED)) {
-		inited = true;
-		ESP_LOGI(TAG, "staconnected");
+	} else if (event == WIFI_EVENT_AP_START) {
+		ESP_LOGI(TAG, "WIFI_EVENT_AP_START. Starting webserver for AP");
 		initWebServer(0);
 	} else if (event == 100) {
 		// sntp event
@@ -46,8 +45,9 @@ void app_main(void)
     sem = xSemaphoreCreateMutex();
     initStorage(sem);
     loadSettings();
-    initCore(sem);
-    initNetwork(&networkHandler);     
+    initNetwork(&networkHandler);
+    if (initCore(sem) == ESP_OK) 
+    	startNetwork();     
 }
 
 // Chip is ESP32-D0WD-V3 (revision v3.0)   on new

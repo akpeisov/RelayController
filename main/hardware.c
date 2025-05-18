@@ -163,26 +163,39 @@ uint8_t readFrom8574(uint8_t adr) {
 
 void setRGBFace(char* color) {
     if (!i2c) return;
-    uint16_t min = 1000;
+    uint16_t min = 2000;  
+    uint8_t dev = 0;
+    uint8_t r = 0, g = 0, b = 0;  
     if (controllerType == RCV2S) {
-        if (!strcmp(color, "red")) {            
-            setI2COut(4, 10, 4096);        
-            setI2COut(4, 11, 4096);        
-            setI2COut(4, 12, min);                    
-        } else if (!strcmp(color, "yellow")) {            
-            setI2COut(4, 10, 4096);        
-            setI2COut(4, 11, min);        
-            setI2COut(4, 12, min);                    
-        } else if (!strcmp(color, "green")) {            
-            setI2COut(4, 10, 4096);
-            setI2COut(4, 11, min);        
-            setI2COut(4, 12, 4096);                        
-        } else {
-            setI2COut(4, 10, 4096);        
-            setI2COut(4, 11, 4096);        
-            setI2COut(4, 12, 4096);
-        }
+        dev = 4;
+        r = 10;
+        g = 11;
+        b = 12;
+    } else if (controllerType == RCV2B) {
+        dev = 7;
+        r = 13;
+        g = 14;
+        b = 15;    
     }
+
+    if (!strcmp(color, "red")) {            
+        setI2COut(dev, r, 4096);        
+        setI2COut(dev, g, 4096);        
+        setI2COut(dev, b, min);                    
+    } else if (!strcmp(color, "yellow")) {            
+        setI2COut(dev, r, 4096);        
+        setI2COut(dev, g, min);        
+        setI2COut(dev, b, min);                    
+    } else if (!strcmp(color, "green")) {            
+        setI2COut(dev, r, 4096);
+        setI2COut(dev, g, min);        
+        setI2COut(dev, b, 4096);                        
+    } else {
+        setI2COut(dev, r, 4096);        
+        setI2COut(dev, g, 4096);        
+        setI2COut(dev, b, 4096);
+    }
+    
 }
 
 // нужен таск для выставления и проверки значений PWM для реле.
@@ -309,11 +322,11 @@ esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {
     pcf8563_init_desc(&devices[0].device, 0, SDA, SCL);        
     struct tm timeinfo;
     bool valid;
-    if (pcf8563_get_time(&devices[0].device, &time, &valid) == ESP_OK) {
+    if (pcf8563_get_time(&devices[0].device, &timeinfo, &valid) == ESP_OK) {
         clockPresent = true;
         ESP_LOGI(TAG, "%04d-%02d-%02d %02d:%02d:%02d, %s\n", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1,
                  timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, valid ? "VALID" : "NOT VALID");
-        if (valid && (timeinfo.tm_year + 1900 >= 2024)) {
+        if (valid && (timeinfo.tm_year + 1900 >= 2025)) {
             time_t now;
             //struct tm timeinfo;
             time(&now);
@@ -526,20 +539,35 @@ void updateStateHW(uint16_t outputs, uint16_t inputsLeds, uint16_t outputsLeds) 
         // отдельно реле, индикация
         setRelayValues(outputs);
 
-        setI2COut(4, 0, (inputsLeds & 0x1) > 0 ? 0 : 4096);    
-        setI2COut(4, 1, (inputsLeds & 0x2) > 0 ? 0 : 4096);    
-        setI2COut(4, 2, (inputsLeds & 0x4) > 0 ? 0 : 4096);    
-        setI2COut(4, 3, (inputsLeds & 0x8) > 0 ? 0 : 4096);    
-        setI2COut(4, 4, (inputsLeds & 0x10) > 0 ? 0 : 4096);    
-        setI2COut(4, 5, (inputsLeds & 0x20) > 0 ? 0 : 4096);    
-        setI2COut(4, 6, (outputsLeds & 0x1) > 0 ? 0 : 4096);    
-        setI2COut(4, 7, (outputsLeds & 0x2) > 0 ? 0 : 4096);    
-        setI2COut(4, 8, (outputsLeds & 0x4) > 0 ? 0 : 4096);    
-        setI2COut(4, 9, (outputsLeds & 0x8) > 0 ? 0 : 4096);
+        for (uint8_t i=0; i<6; i++) {
+            setI2COut(4, i, (inputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
+        }
+
+        // setI2COut(4, 0, (inputsLeds & 0x1) > 0 ? 0 : 4096);    
+        // setI2COut(4, 1, (inputsLeds & 0x2) > 0 ? 0 : 4096);    
+        // setI2COut(4, 2, (inputsLeds & 0x4) > 0 ? 0 : 4096);    
+        // setI2COut(4, 3, (inputsLeds & 0x8) > 0 ? 0 : 4096);    
+        // setI2COut(4, 4, (inputsLeds & 0x10) > 0 ? 0 : 4096);    
+        // setI2COut(4, 5, (inputsLeds & 0x20) > 0 ? 0 : 4096); 
+
+        for (uint8_t i=0; i<4; i++) {
+            setI2COut(4, i+6, (inputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
+        }
+
+        // setI2COut(4, 6, (outputsLeds & 0x1) > 0 ? 0 : 4096); 
+        // setI2COut(4, 7, (outputsLeds & 0x2) > 0 ? 0 : 4096);    
+        // setI2COut(4, 8, (outputsLeds & 0x4) > 0 ? 0 : 4096);    
+        // setI2COut(4, 9, (outputsLeds & 0x8) > 0 ? 0 : 4096);
     } else if (controllerType == RCV2B) {   
+        setRelayValues(outputs);
+
         for (uint8_t i=0; i<16; i++) {
-            //setI2COut(4, i, testbit(outputsLeds, i) > 0 ? 0 : 4096);    
-        }   
+            setI2COut(4, i, (inputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
+        }
+
+        for (uint8_t i=0; i<12; i++) {
+            setI2COut(7, i, (outputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
+        }
     }   
 }
 
@@ -554,10 +582,10 @@ void readInputs(uint8_t *values, uint8_t count) {
             values[1] = readFrom8574(2) & 0x0F;
             //ESP_LOGI(TAG, "Inputs2 %d %d", values[0], values[1]);
         } else if (count == 4) {
-            values[0] = readFrom8574(1);
-            values[1] = readFrom8574(5);
-            values[2] = readFrom8574(2);
-            values[3] = readFrom8574(6);
+            values[0] = readFrom8574(1); // relay board inputs
+            values[1] = readFrom8574(5); // relay board inputs
+            values[2] = readFrom8574(2); // face
+            values[3] = readFrom8574(6); // face
         }
     } else {
         // заглушка для неизвестных типов
@@ -574,7 +602,7 @@ uint16_t readServiceButtons() {
     uint16_t buttons = 0x0;
     if (controllerType == RCV1S) {    
         readFrom165(inputs, 2);
-        ESP_LOGI(TAG, "readFrom165 %d %d", inputs[0], inputs[1]);
+        //ESP_LOGI(TAG, "readFrom165 %d %d", inputs[0], inputs[1]);
         buttons = inputs[0]>>4;
         buttons |= 0xFFF0;
         buttons = ~buttons;        
@@ -585,9 +613,17 @@ uint16_t readServiceButtons() {
         buttons |= (inputs[1] & 0xC0) >> 6; // две кнопки справа. маска т.к. входы в воздухе
         buttons |= 0xFFC0; // чтобы заполнить 6 первых бит единицами после сдвига на 6
         buttons = ~buttons;
+    } else if (controllerType == RCV2B) {
+        inputs[0] = readFrom8574(2); // face
+        inputs[1] = readFrom8574(6); // face
+        buttons = inputs[1];
+        buttons<<=8;
+        buttons |= inputs[0];
+        buttons = ~buttons;          
     } else {
         // TODO : добавить чтение значений кнопок для новых контроллеров
     }
+    ESP_LOGI(TAG, "readServiceButtons inputs 0x%02x%02x buttons 0x%02x", inputs[1], inputs[0], buttons);    
     return buttons;
 }
 
