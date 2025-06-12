@@ -5,7 +5,6 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
-
 #include "core.h"
 #include "utils.h"
 #include "network.h"
@@ -26,6 +25,7 @@ void networkHandler(uint8_t event, uint32_t address) {
 		     (address & 0xFFFFFF) >> 16, address >> 24);
 	if (!inited && (event == WIFI_CONNECTED || event == ETH_CONNECTED)) {
 		inited = true;
+		//otaCheck(getSettingsValueString("otaurl"), cert_pem_start);
 		runWebServer();
 	    initWS();
 	    initMQTT();
