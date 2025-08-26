@@ -11,16 +11,17 @@
 #include "cJSON.h"
 #include "hardware.h"
 #include "time.h"
-#include "settings.h"
+#include "config.h"
 #include "modbus.h"
 #include "mqtt.h"
 #include "ftp.h"
 
 static const char *TAG = "CORE";
 static SemaphoreHandle_t sem_busy;
-static cJSON *deviceConfig;
+static cJSON *IOConfig;
 static cJSON *jScheduler;
 static cJSON *jMQTTTopics;
+static cJSON *mbSlaves;
 static bool mbSlave = false;
 static bool mqttConnected = false;
 static bool wsConnected = false;
@@ -47,27 +48,23 @@ ControllerData controllersData[] = {
 };
 uint32_t serviceButtonsTime[16] = {0}; // in ms
 uint32_t inputButtonsTime[32] = {0}; // in ms
-//TaskHandle_t iTaskHandle[32] = {NULL};
 void processScheduler();
 static bool reboot = false;
 
 void determinateControllerType() {
     if (controllerType == UNKNOWN) {
-        char *cType = getSettingsValueString("controllerType");
-        ESP_LOGI(TAG, "getSettingsValueString %s", cType == NULL ? "NULL" : cType);
+        char *cType = getConfigValueString("controllerType");
+        ESP_LOGI(TAG, "getConfigValueString %s", cType == NULL ? "NULL" : cType);
         if (cType != NULL) {
             if (!strcmp(cType, "small") || !strcmp(cType, "RCV1S")) {
                 controllerType = RCV1S;
             } else if (!strcmp(cType, "big") || !strcmp(cType, "RCV1B")) {
                 controllerType = RCV1B;
             }            
+        } else {
+            controllerType = RCV1S; // by default
         }
-    }    
-    // if (cType == NULL || !strcmp(cType, "UNKNOWN")) {
-    //     ESP_LOGI(TAG, "Saving controllerType in settings");
-    //     setSettingsValueString("controllerType", getControllerTypeText(controllerType));
-    //     saveSettings();
-    // }
+    }        
 }
 
 SemaphoreHandle_t getSemaphore() {
@@ -78,11 +75,9 @@ void createSemaphore() {
     sem_busy = xSemaphoreCreateMutex();
 }
 
-esp_err_t createDeviceConfig() {
-    // ESP_LOGI(TAG, "createDeviceConfig. %s controller", itsSmall ? "Small" : "Big");
-    if (cJSON_IsObject(deviceConfig))
-        cJSON_Delete(deviceConfig);
-    deviceConfig = cJSON_CreateObject();    
+esp_err_t createIOConfig() {
+    ESP_LOGI(TAG, "Creating default IO config");
+    IOConfig = cJSON_CreateObject(); // overwrite existing object
     // outputs
     char *name = NULL;
     name = malloc(15);
@@ -90,34 +85,34 @@ esp_err_t createDeviceConfig() {
 	cJSON *outputs = cJSON_CreateArray();    
     for (uint8_t i=0; i<controllersData[controllerType].outputs; i++) {
         cJSON *output = cJSON_CreateObject();
-        cJSON_AddItemToObject(output, "id", cJSON_CreateNumber(i));
+        cJSON_AddNumberToObject(output, "id", i);
         sprintf(name, "Out %d", i);    
-        cJSON_AddItemToObject(output, "name", cJSON_CreateString(name));
-        cJSON_AddItemToObject(output, "type", cJSON_CreateString("s"));
-        cJSON_AddItemToObject(output, "state", cJSON_CreateString("off"));        
+        cJSON_AddStringToObject(output, "name", name);
+        cJSON_AddStringToObject(output, "type", "s");
+        cJSON_AddStringToObject(output, "state", "off");        
         cJSON_AddItemToArray(outputs, output);        
     }
-    cJSON_AddItemToObject(deviceConfig, "outputs", outputs);
+    cJSON_AddItemToObject(IOConfig, "outputs", outputs);
 
 	cJSON *inputs = cJSON_CreateArray();    
     // service buttons
     for (uint8_t i=0; i<controllersData[controllerType].buttons; i++) {
         cJSON *input = cJSON_CreateObject();
-        cJSON_AddItemToObject(input, "id", cJSON_CreateNumber(i+16));
+        cJSON_AddNumberToObject(input, "id", i+16);
         sprintf(name, "Svc %d", i);
-        cJSON_AddItemToObject(input, "name", cJSON_CreateString(name));
-        cJSON_AddItemToObject(input, "type", cJSON_CreateString("BTN"));
+        cJSON_AddStringToObject(input, "name", name);
+        cJSON_AddStringToObject(input, "type", "BTN");
                 
         cJSON *actions = cJSON_CreateArray();
         cJSON *action = cJSON_CreateObject();
-        cJSON_AddItemToObject(action, "order", cJSON_CreateNumber(0));
-        cJSON_AddItemToObject(action, "output", cJSON_CreateNumber(i));
-        cJSON_AddItemToObject(action, "action", cJSON_CreateString("toggle"));
+        cJSON_AddNumberToObject(action, "order", 0);
+        cJSON_AddNumberToObject(action, "output", i);
+        cJSON_AddStringToObject(action, "action", "toggle");
         cJSON_AddItemToArray(actions, action);
         
         cJSON *events = cJSON_CreateArray();
         cJSON *event = cJSON_CreateObject();
-        cJSON_AddItemToObject(event, "event", cJSON_CreateString("toggle"));
+        cJSON_AddStringToObject(event, "event", "toggle");
         cJSON_AddItemToObject(event, "actions", actions);
         cJSON_AddItemToArray(events, event);
 
@@ -127,152 +122,55 @@ esp_err_t createDeviceConfig() {
     // external inputs    
     for (uint8_t i=0; i<controllersData[controllerType].inputs; i++) {
         cJSON *input = cJSON_CreateObject();
-        cJSON_AddItemToObject(input, "id", cJSON_CreateNumber(i));
+        cJSON_AddNumberToObject(input, "id", i);
         sprintf(name, "In %d", i);
-        cJSON_AddItemToObject(input, "name", cJSON_CreateString(name));
-        cJSON_AddItemToObject(input, "type", cJSON_CreateString("SW"));
+        cJSON_AddStringToObject(input, "name", name);
+        cJSON_AddStringToObject(input, "type", "SW");
         
         cJSON *actionsOn = cJSON_CreateArray();
         cJSON *actionOn = cJSON_CreateObject();
-        cJSON_AddItemToObject(actionOn, "order", cJSON_CreateNumber(0));
-        cJSON_AddItemToObject(actionOn, "output", cJSON_CreateNumber(i>controllersData[controllerType].outputs-1?controllersData[controllerType].outputs-1:i));
-        cJSON_AddItemToObject(actionOn, "action", cJSON_CreateString("on"));
+        cJSON_AddNumberToObject(actionOn, "order", 0);
+        cJSON_AddNumberToObject(actionOn, "output", i>controllersData[controllerType].outputs-1?controllersData[controllerType].outputs-1:i);
+        cJSON_AddStringToObject(actionOn, "action", "on");
         cJSON_AddItemToArray(actionsOn, actionOn);
         
         cJSON *eventsOn = cJSON_CreateArray();
         cJSON *eventOn = cJSON_CreateObject();
-        cJSON_AddItemToObject(eventOn, "event", cJSON_CreateString("on"));
+        cJSON_AddStringToObject(eventOn, "event", "on");
         cJSON_AddItemToObject(eventOn, "actions", actionsOn);
         cJSON_AddItemToObject(input, "events", eventsOn);
 
         cJSON *actionsOff = cJSON_CreateArray();
         cJSON *actionOff = cJSON_CreateObject();
-        cJSON_AddItemToObject(actionOff, "order", cJSON_CreateNumber(0));
-        cJSON_AddItemToObject(actionOff, "output", cJSON_CreateNumber(i>controllersData[controllerType].outputs-1?controllersData[controllerType].outputs-1:i));
-        cJSON_AddItemToObject(actionOff, "action", cJSON_CreateString("off"));
+        cJSON_AddNumberToObject(actionOff, "order", 0);
+        cJSON_AddNumberToObject(actionOff, "output", i>controllersData[controllerType].outputs-1?controllersData[controllerType].outputs-1:i);
+        cJSON_AddStringToObject(actionOff, "action", "off");
         cJSON_AddItemToArray(actionsOff, actionOff);
         
         cJSON *eventsOff = cJSON_CreateArray();
         cJSON *eventOff = cJSON_CreateObject();
-        cJSON_AddItemToObject(eventOff, "event", cJSON_CreateString("off"));
+        cJSON_AddStringToObject(eventOff, "event", "off");
         cJSON_AddItemToObject(eventOff, "actions", actionsOff);
         cJSON_AddItemToObject(input, "events", eventsOff);
 
         cJSON_AddItemToArray(inputs, input);
     }   
-    cJSON_AddItemToObject(deviceConfig, "inputs", inputs);
+    cJSON_AddItemToObject(IOConfig, "inputs", inputs);
     
     free(name);
     // TODO : outputs & other
     return ESP_OK;
 }
 
-esp_err_t saveDeviceConfig() {
-    if (!cJSON_IsObject(deviceConfig)) {
-        ESP_LOGE(TAG, "deviceConfig is not a json!");
-        return ESP_FAIL;
-    }
-    char *cfg = NULL;
-    cfg = cJSON_Print(deviceConfig);
-    //ESP_LOGI(TAG, "config %s", cfg);
-    if (cfg == NULL) {
-        ESP_LOGE(TAG, "Failed to print deviceConfig");
-        return ESP_FAIL;
-    }
-    esp_err_t err = saveTextFile("/config/deviceconfig.json", cfg);
-    free(cfg);
-    return err;
-}
-
-esp_err_t loadDeviceConfig() {
-    char * buffer;
-    if (loadTextFile("/config/deviceconfig.json", &buffer) == ESP_OK) {
-        cJSON *parent = cJSON_Parse(buffer);
-        if(!cJSON_IsObject(parent) && !cJSON_IsArray(parent))
-        {
-            free(buffer);
-            return ESP_FAIL;
-        }
-        cJSON_Delete(deviceConfig);
-        deviceConfig = parent;        
-    } else {
-        ESP_LOGI(TAG, "can't read deviceConfig. creating default deviceConfig");
-        cJSON_Delete(deviceConfig);
-        if (createDeviceConfig() == ESP_OK) {
-            saveDeviceConfig();        
-            return ESP_OK;
-        } else {
-            return ESP_FAIL;
-        }
-
-    }
-    free(buffer);
-    return ESP_OK;
-}
-
-esp_err_t saveScheduler() {
-    char *data = cJSON_Print(jScheduler);    
-    esp_err_t err = saveTextFile("/config/scheduler.json", data);
-    free(data);
-    return err;
-}
-
-esp_err_t loadScheduler() {
-    char * buffer;
-    if (loadTextFile("/config/scheduler.json", &buffer) == ESP_OK) {
-        cJSON *parent = cJSON_Parse(buffer);
-        if (!cJSON_IsArray(parent)) {
-            free(buffer);
-            return ESP_FAIL;
-        }
-        cJSON_Delete(jScheduler);
-        jScheduler = parent;        
-        free(buffer);
-    } else {
-        ESP_LOGI(TAG, "can't read scheduler");
-        cJSON_Delete(jScheduler);
-        jScheduler = cJSON_CreateArray();       
-        saveScheduler();
-    }    
-    return ESP_OK;
-}
-
-esp_err_t saveMqttTopics() {
-    char *data = cJSON_Print(jMQTTTopics);    
-    esp_err_t err = saveTextFile("/config/mqtttopics.json", data);
-    free(data);
-    return err;
-}
-
-esp_err_t loadMqttTopics() {
-    char *buffer;
-    if (loadTextFile("/config/mqtttopics.json", &buffer) == ESP_OK) {
-        cJSON *parent = cJSON_Parse(buffer);
-        if (!cJSON_IsArray(parent)) {
-            free(buffer);
-            return ESP_FAIL;
-        }
-        cJSON_Delete(jMQTTTopics);
-        jMQTTTopics = parent;        
-        free(buffer);
-    } else {
-        ESP_LOGI(TAG, "can't read mqtttopics");
-        cJSON_Delete(jMQTTTopics);
-        jMQTTTopics = cJSON_CreateArray();       
-        saveMqttTopics();
-    }    
-    return ESP_OK;
-}
-
 void serviceTask(void *pvParameter) {
     ESP_LOGI(TAG, "Creating service task");
-    uint32_t minMem = getSettingsValueInt2("watchdog", "wdtmemsize");
+    // uint32_t minMem = getConfigValueInt("watchdog", "wdtmemsize");
     while(1) {   
         // every 1 second     
-        if ((minMem > 0) && (esp_get_free_heap_size() < minMem)) {
-            ESP_LOGE(TAG, "HEAP memory WDT triggered. Actual free memory is %d. Restarting...", esp_get_free_heap_size());
-            esp_restart();
-        }
+        // if ((minMem > 0) && (esp_get_free_heap_size() < minMem)) {
+        //     ESP_LOGE(TAG, "HEAP memory WDT triggered. Actual free memory is %d. Restarting...", esp_get_free_heap_size());
+        //     esp_restart();
+        // }
         if (reboot) {
             static uint8_t cntReboot = 0;
             if (cntReboot++ >= 3) {
@@ -288,8 +186,8 @@ cJSON* getDeviceInfoJson() {
     cJSON *status = cJSON_CreateObject();    
     char *uptime = getUpTime();
     char *curdate = getCurrentDateTime("%d.%m.%Y %H:%M:%S");
-    char *hostname = getSettingsValueString("hostname");
-    char *description = getSettingsValueString("description");
+    char *hostname = getConfigValueString("hostname");
+    char *description = getConfigValueString("description");
     char *version = getCurrentVersion();
     char *ethip = getETHIPStr();
     char *wifiip = getWIFIIPStr();
@@ -305,6 +203,7 @@ cJSON* getDeviceInfoJson() {
     cJSON_AddItemToObject(status, "wifiRSSI", cJSON_CreateNumber(getRSSI()));
     cJSON_AddItemToObject(status, "ethIP", cJSON_CreateString(ethip));
     cJSON_AddItemToObject(status, "wifiIP", cJSON_CreateString(wifiip));      
+    cJSON_AddItemToObject(status, "model", cJSON_CreateString(controllersData[controllerType].name));      
     free(uptime);
     free(curdate);  
     free(version);
@@ -324,13 +223,13 @@ void sendInfo() {
     }
     if (mqttConnected) {
         char topic[50] = {0};
-        strcpy(topic, getSettingsValueString("hostname"));
+        strcpy(topic, getConfigValueString("hostname"));
         if (strlen(topic) == 0) {
             strcpy(topic, "unknown");
         }
         strcat(topic, "/info\0");
         char *data = cJSON_PrintUnformatted(payload);
-        MQTTPublish(topic, data);
+        MQTTPublish(topic, data);        
         free(data);
     }
     if (wsConnected) {
@@ -343,7 +242,8 @@ void sendInfo() {
             free(infoBuf);
             cJSON_Delete(info);     
         }   
-    }    
+    }  
+    //cJSON_Delete(payload);  
 }
 
 void sendHello() {
@@ -378,7 +278,7 @@ void sendHello() {
         }
     }
     //cJSON_AddItemToObject(payload, "info", getDeviceInfoJson());
-    // add slaveid 
+    // add slaveId 
     cJSON_AddItemToObject(hello, "payload", payload);
     char *hello_str = cJSON_PrintUnformatted(hello);    
     cJSON_Delete(hello);
@@ -392,13 +292,13 @@ void updateValues() {
     uint16_t inputsLeds = 0;
     uint16_t outputsLeds = 0;
 
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "outputs")) ||
-        !cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "inputs"))) {
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "outputs")) ||
+        !cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "inputs"))) {
         ESP_LOGE(TAG, "bad config");
         return;
     }
 
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {
         uint8_t slaveId = 0;
         if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")))
@@ -416,7 +316,7 @@ void updateValues() {
         }
         childOutput = childOutput->next;
     }
-    cJSON *childInput = cJSON_GetObjectItem(deviceConfig, "inputs")->child;
+    cJSON *childInput = cJSON_GetObjectItem(IOConfig, "inputs")->child;
     while (childInput) {  
         uint8_t slaveId = 0;
         if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "slaveId")))
@@ -444,7 +344,7 @@ void showError(uint8_t err) {
 
 void initInputs() {
     // по умолчанию все входы должны быть выключены, иначе отображается неправильно на индикации
-    cJSON *childInput = cJSON_GetObjectItem(deviceConfig, "inputs")->child;
+    cJSON *childInput = cJSON_GetObjectItem(IOConfig, "inputs")->child;
     while (childInput) {  
         if (cJSON_IsString(cJSON_GetObjectItem(childInput, "state"))) {
             cJSON_ReplaceItemInObject(childInput, "state", cJSON_CreateString("off"));        
@@ -458,7 +358,7 @@ void initInputs() {
 void initOutputs() {
     // инициализация выходов при включении
     // значение default может быть off или on
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {
         if (!cJSON_IsString(cJSON_GetObjectItem(childOutput, "type"))) {
             cJSON_AddItemToObject(childOutput, "type", cJSON_CreateString("s"));
@@ -504,7 +404,7 @@ void sendWSUpdateInput(uint8_t pSlaveId, uint8_t pInput, char* pState) {
     cJSON_AddItemToObject(payload, "input", cJSON_CreateNumber(pInput));
     cJSON_AddStringToObject(payload, "state", pState);
     if (pSlaveId > 0) {
-        cJSON_AddItemToObject(payload, "slaveid", cJSON_CreateNumber(pSlaveId));
+        cJSON_AddItemToObject(payload, "slaveId", cJSON_CreateNumber(pSlaveId));
     }
     cJSON *json = cJSON_CreateObject();
     cJSON_AddStringToObject(json, "type", "UPDATE");
@@ -523,7 +423,7 @@ void publishOutput(uint8_t pSlaveId, uint8_t pOutput, char* pValue, uint8_t pTim
     if (mqttConnected) {
         char topic[50] = {0};
         char buf[5];
-        strcpy(topic, getSettingsValueString("hostname"));
+        strcpy(topic, getConfigValueString("hostname"));
         if (strlen(topic) == 0) {
             strcpy(topic, "unknown");
         }
@@ -548,10 +448,10 @@ void publishInput(uint8_t pInput, char* pState, uint8_t pSlaveId) {
 }
 
 char* getOutputState(uint8_t pOutput) {
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "outputs"))) {        
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "outputs"))) {        
         return "off";
     }    
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {  
         if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id")) &&
             (cJSON_GetObjectItem(childOutput, "id")->valueint == pOutput)) {            
@@ -564,10 +464,10 @@ char* getOutputState(uint8_t pOutput) {
 }
 
 char* getInputState(uint8_t pInput) {
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "inputs"))) {        
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "inputs"))) {        
         return "off";
     }    
-    cJSON *childInput = cJSON_GetObjectItem(deviceConfig, "inputs")->child;
+    cJSON *childInput = cJSON_GetObjectItem(IOConfig, "inputs")->child;
     while (childInput) {  
         if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "id")) &&
             (cJSON_GetObjectItem(childInput, "id")->valueint == pInput)) {            
@@ -582,8 +482,8 @@ char* getInputState(uint8_t pInput) {
 void setOutput(uint8_t pOutput, char* pValue) {
     // установка значений для выхода        
     ESP_LOGI(TAG, "setOutput output %d, value %s", pOutput, pValue);
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "outputs"))) {
-        ESP_LOGE(TAG, "deviceConfig outputs isn't array");
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "outputs"))) {
+        ESP_LOGE(TAG, "IOConfig outputs isn't array");
         return;
     }        
     if (!strcmp(pValue, "toggle")) {
@@ -592,7 +492,7 @@ void setOutput(uint8_t pOutput, char* pValue) {
     // касательно длительности. Приоритет длительности из правала. Т.е. если на входе стоит длительность 5, а в правиле 10, то выход включится на 10 сек
     uint16_t timer = 0;
     uint16_t oLimit = 0;
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {
         if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id")) &&
             (cJSON_GetObjectItem(childOutput, "id")->valueint == pOutput)) {
@@ -643,14 +543,14 @@ void setRemoteOutput(uint8_t pSlaveId, uint8_t pOutput, char* pValue) {
 
 void setAllOff() {
     // выставить все выходы в состояние выкл, включая тепличные таймеры и слейвы модбаса
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "outputs"))) {
-        ESP_LOGE(TAG, "deviceConfig outputs isn't array");
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "outputs"))) {
+        ESP_LOGE(TAG, "IOConfig outputs isn't array");
         return;
     }
     char *action = "off";
     
     uint16_t timer = 0;
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {  
         uint8_t slaveId = 0;
         if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")))
@@ -767,7 +667,7 @@ bool checkACL(cJSON *acls) {
 void processInputEvents(uint8_t pSlaveId, uint8_t pInput, char* pEvent, uint8_t i) {
     // TODO : обработать i
 	// обработка события на входе/кнопке    
-    cJSON *childInput = cJSON_GetObjectItem(deviceConfig, "inputs")->child;
+    cJSON *childInput = cJSON_GetObjectItem(IOConfig, "inputs")->child;
     while (childInput) {
         uint8_t slaveId = 0; // определяем slaveId. Для мастера будет 0
         if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "slaveId")))
@@ -841,13 +741,9 @@ void processInputEvents(uint8_t pSlaveId, uint8_t pInput, char* pEvent, uint8_t 
         publishInput(pInput, pEvent, 0);    
     }   
 
-    if (pInput == 16 && !strcmp(pEvent, "long")) {
+    if (pInput == 16 && !strcmp(pEvent, "longpress")) {
         publishInput(pInput, pEvent, 0);    
     }
-}
-
-void processRemoteInputEvents(uint8_t slaveId, uint8_t pInput, char* pEvent) {
-
 }
 
 uint8_t correctInput(uint8_t pInput) {
@@ -892,11 +788,11 @@ void processInput(uint8_t pInput, uint8_t pEvent) {
     uint8_t i = 255;
 
     // find input and event    
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "inputs"))) {
-        ESP_LOGE(TAG, "deviceConfig inputs isn't array");
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "inputs"))) {
+        ESP_LOGE(TAG, "IOConfig inputs isn't array");
         return;
     }    
-    cJSON *childInput = cJSON_GetObjectItem(deviceConfig, "inputs")->child;
+    cJSON *childInput = cJSON_GetObjectItem(IOConfig, "inputs")->child;
     while (childInput) {       
         if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "id")) && 
             cJSON_GetObjectItem(childInput, "id")->valueint == pInput) { 
@@ -943,7 +839,7 @@ void processInput(uint8_t pInput, uint8_t pEvent) {
 						event = "toggle";
 					} else {
 						// long press
-						event = "long";
+						event = "longpress";
 					}					
                     ESP_LOGI(TAG, "Button %d event %s", pInput, event);                    
                 }                
@@ -961,10 +857,10 @@ void processInput(uint8_t pInput, uint8_t pEvent) {
 void outputsTimer() {
     // check all active outputs for timeout
     // run every 1 second
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "outputs"))) {        
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "outputs"))) {        
         return;
     }    
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {  
         if (cJSON_IsString(cJSON_GetObjectItem(childOutput, "type")) &&
             !strcmp(cJSON_GetObjectItem(childOutput, "type")->valuestring, "t")) {
@@ -1021,10 +917,10 @@ void outputsTimer() {
 void outputsTimerShot() {
     // test for shooter
     // every 100 ms
-    if (!cJSON_IsArray(cJSON_GetObjectItem(deviceConfig, "outputs"))) {        
+    if (!cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "outputs"))) {        
         return;
     }    
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {  
         if (cJSON_IsString(cJSON_GetObjectItem(childOutput, "type")) &&
             !strcmp(cJSON_GetObjectItem(childOutput, "type")->valuestring, "shooter")) {
@@ -1127,8 +1023,10 @@ void inputsTask(void *pvParameter) {
 
 void resetDefaultConfigs() {
     ESP_LOGW(TAG, "Resetting device config");    
-    if (createDeviceConfig() == ESP_OK)
-        saveDeviceConfig();  
+    if (createIOConfig() == ESP_OK) {
+        setConfigValueObject("io", IOConfig);     
+        saveConfig();
+    }
 }
 
 bool checkServiceButtons() {
@@ -1165,33 +1063,6 @@ bool checkServiceButtons() {
 void startInputTask() {
 	ESP_LOGI(TAG, "Starting input task");
     xTaskCreate(&inputsTask, "inputsTask", 4096, NULL, 5, NULL);    
-}
-
-esp_err_t getDeviceConfig(char **response) {
-    ESP_LOGI(TAG, "getDeviceConfig");
-    if (!cJSON_IsObject(deviceConfig)) {      
-        setErrorTextJson(response, "config is not a json");
-        return ESP_FAIL;
-    }    
-    *response = cJSON_Print(deviceConfig);
-    return ESP_OK;    
-}
-
-esp_err_t setDeviceConfig(char **response, char *content) {
-    cJSON *parent = cJSON_Parse(content);
-    
-    if(!cJSON_IsObject(parent))
-    {
-        setErrorTextJson(response, "Is not a JSON array");    
-        cJSON_Delete(parent);
-        return ESP_FAIL;
-    }
-       
-    cJSON_Delete(deviceConfig);
-    deviceConfig = parent;    
-    saveDeviceConfig();
-    setTextJson(response, "OK");    
-    return ESP_OK;
 }
 
 esp_err_t getDeviceInfo(char **response) {
@@ -1273,34 +1144,59 @@ esp_err_t ioservice(char **response, char *content) {
     return ESP_FAIL;    
 }
 
-esp_err_t getScheduler(char **response) {
-    if (!cJSON_IsArray(jScheduler)) {      
-        setErrorTextJson(response, "Is not a JSON array");    
-        return ESP_FAIL;
-    }    
-    *response = cJSON_Print(jScheduler);
-    return ESP_OK;    
-}
-
-esp_err_t setScheduler(char **response, char *content) {
-    cJSON *parent = cJSON_Parse(content);
-    
-    if(!cJSON_IsArray(parent)) {
-        setErrorTextJson(response, "Is not a JSON array");    
-        cJSON_Delete(parent);
-        return ESP_FAIL;
-    }       
-    cJSON_Delete(jScheduler);
-    jScheduler = parent;    
-    saveScheduler();
-    setTextJson(response, "OK");    
-    return ESP_OK;
+char* getDeviceIOStates() {
+    char *response;
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddItemToObject(json, "type", cJSON_CreateString("IOSTATES"));
+    // io states
+    cJSON *jOuts = cJSON_CreateArray();
+    cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
+    while (childOutput) {
+        if (cJSON_IsString(cJSON_GetObjectItem(childOutput, "state"))) {
+            cJSON *jOut = cJSON_CreateObject();
+            cJSON_AddNumberToObject(jOut, "id", cJSON_GetObjectItem(childOutput, "id")->valueint);
+            cJSON_AddStringToObject(jOut, "state", cJSON_GetObjectItem(childOutput, "state")->valuestring); 
+            if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")))
+                cJSON_AddNumberToObject(jOut, "slaveId", cJSON_GetObjectItem(childOutput, "slaveId")->valueint);
+            cJSON_AddItemToArray(jOuts, jOut);  
+        }
+        childOutput = childOutput->next;    
+    }
+    cJSON *jIns = cJSON_CreateArray();
+    cJSON *childInput = cJSON_GetObjectItem(IOConfig, "inputs")->child;
+    while (childInput) { 
+        if (cJSON_IsString(cJSON_GetObjectItem(childInput, "type")) &&
+            strcmp(cJSON_GetObjectItem(childInput, "type")->valuestring, "BTN") && 
+            cJSON_IsString(cJSON_GetObjectItem(childInput, "state"))) {
+            // only for inputs
+            cJSON *jIn = cJSON_CreateObject();
+            cJSON_AddNumberToObject(jIn, "id", cJSON_GetObjectItem(childInput, "id")->valueint);
+            cJSON_AddStringToObject(jIn, "state", cJSON_GetObjectItem(childInput, "state")->valuestring);   
+            if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "slaveId")))
+                cJSON_AddNumberToObject(jIn, "slaveId", cJSON_GetObjectItem(childInput, "slaveId")->valueint);
+            cJSON_AddItemToArray(jIns, jIn);        
+        }
+        childInput = childInput->next;  
+    }   
+    cJSON *jObj = cJSON_CreateObject();
+    cJSON_AddItemToObject(jObj, "outputs", jOuts);
+    cJSON_AddItemToObject(jObj, "inputs", jIns);    
+    cJSON_AddItemToObject(json, "payload", jObj);
+    response = cJSON_PrintUnformatted(json);
+    cJSON_Delete(json);
+    return response;
 }
 
 void initScheduler() {
     ESP_LOGI(TAG, "Initiating scheduler");
     // сбрасываем у всех задач признак выполнения
-    cJSON *childTask = jScheduler->child;
+    jScheduler = getConfigValueObject("scheduler"); 
+    if (!cJSON_IsObject(jScheduler)) {
+        jScheduler = cJSON_CreateObject();
+        cJSON_AddArrayToObject(jScheduler, "tasks");
+    }   
+    cJSON *tasks = cJSON_GetObjectItem(jScheduler, "tasks");
+    cJSON *childTask = tasks->child;
     while (childTask) {       
         if (cJSON_IsBool(cJSON_GetObjectItem(childTask, "done")))
             cJSON_ReplaceItemInObject(childTask, "done", cJSON_CreateFalse());
@@ -1323,11 +1219,16 @@ void processScheduler() {
     // time(&rawtime);
     // info = localtime(&rawtime);
     //struct tm *info;
+    if (!getConfigValueBool("scheduler/enabled")) {
+        return;
+    }
     struct tm *info = getTime();
     uint16_t currentTime = info->tm_hour*60 + info->tm_min;
     uint16_t grace = 0; // период, в который еще можно запустить задачу
     static uint16_t lastSchedulerTime = 0;
-    ESP_LOGI(TAG, "Scheduler time %d. Day of week %d. Free memory %d", currentTime, info->tm_wday, esp_get_free_heap_size());
+    char *curdate = getCurrentDateTime("%d.%m.%Y %H:%M:%S");
+    ESP_LOGI(TAG, "Scheduler time %d %s. Day of week %d. Free memory %d", currentTime, curdate, info->tm_wday, esp_get_free_heap_size());
+    free(curdate);
     if (currentTime < lastSchedulerTime) {        
         // когда перевалит за 0.00
         initScheduler();
@@ -1337,7 +1238,8 @@ void processScheduler() {
     // пройти все задачи, время которых еще не настало отметить как done = false
     // время которых прошло или наступило проверить на грейс период, по умолчанию он 5 мин
     // если задача со статусом done = false - выполнить ее и пометить как выполненная
-    cJSON *childTask = jScheduler->child;
+    cJSON *tasks = cJSON_GetObjectItem(jScheduler, "tasks");
+    cJSON *childTask = tasks->child;
     while (childTask) {       
         ESP_LOGD(TAG, "Scheduler task %s done is %d", 
                  cJSON_GetObjectItem(childTask, "name")->valuestring, 
@@ -1425,30 +1327,6 @@ void processScheduler() {
     //mqttScheduler(currentTime);
 }
 
-esp_err_t getMqttTopics(char **response) {
-    if (!cJSON_IsArray(jMQTTTopics)) {      
-        setErrorTextJson(response, "jMQTTTopics is not a JSON array");    
-        return ESP_FAIL;
-    }    
-    *response = cJSON_Print(jMQTTTopics);
-    return ESP_OK;    
-}
-
-esp_err_t setMqttTopics(char **response, char *content) {
-    cJSON *parent = cJSON_Parse(content);
-    
-    if(!cJSON_IsArray(parent)) {
-        setErrorTextJson(response, "jMQTTTopics is not a JSON array");    
-        cJSON_Delete(parent);
-        return ESP_FAIL;
-    }       
-    cJSON_Delete(jMQTTTopics);
-    jMQTTTopics = parent;    
-    saveMqttTopics();
-    setTextJson(response, "OK");    
-    return ESP_OK;
-}
-
 esp_err_t ota(char **response, char *content) {
     ESP_LOGI(TAG, "ota service");
 
@@ -1470,6 +1348,14 @@ esp_err_t ota(char **response, char *content) {
     return ESP_OK;
 }
 
+//
+esp_err_t getTest(char **response) {
+    ESP_LOGW(TAG, "Before %d", esp_get_free_heap_size());      
+    *response = getDeviceIOStates();
+    ESP_LOGW(TAG, "After %d", esp_get_free_heap_size());      
+    return ESP_OK;    
+}
+
 esp_err_t uiRouter(httpd_req_t *req) {    
     //ESP_LOGI(TAG, "%d %s", req->method, req->uri);
     char *uri = getClearURI(req->uri);
@@ -1477,24 +1363,18 @@ esp_err_t uiRouter(httpd_req_t *req) {
     char *content = NULL;
     esp_err_t err = ESP_ERR_NOT_FOUND;
     httpd_resp_set_type(req, "application/json");
-	if (!strcmp(uri, "/service/config/network")) {
+	if (!strcmp(uri, "/service/config")) {
         if (req->method == HTTP_GET) {            
-            err = getSettings(&response);
+            err = getConfig(&response);
         } else if (req->method == HTTP_POST) {
             err = getContent(&content, req);
             if (err == ESP_OK) {
-                err = setSettings(&response, content);                
+                err = setConfig(&response, content); 
+                // IO config    
+                IOConfig = getConfigValueObject("io");           
+                // TODO : other configs?
             }
         }        
-    } else if (!strcmp(uri, "/service/config/device")) {
-        if (req->method == HTTP_GET) {
-            err = getDeviceConfig(&response);
-        } else if (req->method == HTTP_POST) {
-            err = getContent(&content, req);
-            if (err == ESP_OK) {
-                err = setDeviceConfig(&response, content);    
-            }
-        }
     } else if (!strcmp(uri, "/service/file")) {
         if (req->method == HTTP_POST) {
             err = setFileWeb(req);            
@@ -1503,24 +1383,6 @@ esp_err_t uiRouter(httpd_req_t *req) {
         }
     } else if ((!strcmp(uri, "/ui/deviceInfo")) && (req->method == HTTP_GET)) {
         err = getDeviceInfo(&response);   
-    } else if (!strcmp(uri, "/service/config/scheduler")) {
-        if (req->method == HTTP_GET) {            
-            err = getScheduler(&response);
-        } else if (req->method == HTTP_POST) {            
-            err = getContent(&content, req);
-            if (err == ESP_OK) {
-                err = setScheduler(&response, content);    
-            }
-        }
-    } else if (!strcmp(uri, "/service/config/mqtttopics")) {
-        if (req->method == HTTP_GET) {            
-            err = getMqttTopics(&response);
-        } else if (req->method == HTTP_POST) {            
-            err = getContent(&content, req);
-            if (err == ESP_OK) {
-                err = setMqttTopics(&response, content);    
-            }
-        }
     } else if (!strcmp(uri, "/ui/ioservice")) {
         if (req->method == HTTP_POST) {
             httpd_resp_set_type(req, "application/json");
@@ -1545,6 +1407,21 @@ esp_err_t uiRouter(httpd_req_t *req) {
                 err = ota(&response, content);                   
             }
         }               
+    } else if (!strcmp(uri, "/service/reboot")) {
+        if (req->method == HTTP_POST) {
+            httpd_resp_set_type(req, "application/json");
+            err = getContent(&content, req);
+            if (err == ESP_OK) {                        
+                ESP_LOGW(TAG, "Reboot!!!");            
+                reboot = true;
+                setTextJson(&response, "Reboot OK");
+                err = ESP_OK;
+            }
+        }               
+    }else if (!strcmp(uri, "/service/test")) {
+        if (req->method == HTTP_GET) {            
+            err = getTest(&response);
+        }
     }
     //free(response);
     if (err == ESP_OK) {
@@ -1575,108 +1452,313 @@ void runWebServer() {
 	initWebServer(1);	
 }
 
-char* getDeviceIOStates() {
+char* getIOConfigMsg() {
     char *response;
     cJSON *json = cJSON_CreateObject();
-    cJSON_AddItemToObject(json, "type", cJSON_CreateString("IOSTATES"));
-    // io states
-    cJSON *jOuts = cJSON_CreateArray();
-    cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
-    while (childOutput) {
-        if (cJSON_IsString(cJSON_GetObjectItem(childOutput, "state"))) {
-            cJSON *jOut = cJSON_CreateObject();
-            cJSON_AddNumberToObject(jOut, "id", cJSON_GetObjectItem(childOutput, "id")->valueint);
-            cJSON_AddStringToObject(jOut, "state", cJSON_GetObjectItem(childOutput, "state")->valuestring); 
-            if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")))
-                cJSON_AddNumberToObject(jOut, "slaveId", cJSON_GetObjectItem(childOutput, "slaveId")->valueint);
-            cJSON_AddItemToArray(jOuts, jOut);  
-        }
-        childOutput = childOutput->next;    
-    }
-    cJSON *jIns = cJSON_CreateArray();
-    cJSON *childInput = cJSON_GetObjectItem(deviceConfig, "inputs")->child;
-    while (childInput) { 
-        if (cJSON_IsString(cJSON_GetObjectItem(childInput, "type")) &&
-            strcmp(cJSON_GetObjectItem(childInput, "type")->valuestring, "BTN") && 
-            cJSON_IsString(cJSON_GetObjectItem(childInput, "state"))) {
-            // only for inputs
-            cJSON *jIn = cJSON_CreateObject();
-            cJSON_AddNumberToObject(jIn, "id", cJSON_GetObjectItem(childInput, "id")->valueint);
-            cJSON_AddStringToObject(jIn, "state", cJSON_GetObjectItem(childInput, "state")->valuestring);   
-            if (cJSON_IsNumber(cJSON_GetObjectItem(childInput, "slaveId")))
-                cJSON_AddNumberToObject(jIn, "slaveId", cJSON_GetObjectItem(childInput, "slaveId")->valueint);
-            cJSON_AddItemToArray(jIns, jIn);        
-        }
-        childInput = childInput->next;  
-    }   
-    cJSON *jObj = cJSON_CreateObject();
-    cJSON_AddItemToObject(jObj, "outputs", jOuts);
-    cJSON_AddItemToObject(jObj, "inputs", jIns);    
-    cJSON_AddItemToObject(json, "payload", jObj);
-    response = cJSON_PrintUnformatted(json);
-    return response;
-}
-
-char* getDeviceConfigMsg() {
-    char *response;
-    cJSON *json = cJSON_CreateObject();
-    cJSON_AddItemToObject(json, "type", cJSON_CreateString("DEVICECONFIG"));
-    cJSON_AddItemToObject(json, "payload", deviceConfig);
+    cJSON_AddItemToObject(json, "type", cJSON_CreateString("IOConfig"));
+    cJSON_AddItemToObject(json, "payload", IOConfig);
     response = cJSON_PrintUnformatted(json);    
     return response;
 }
 
+// bool mbSlaveIdExists(int slaveId) {
+//     cJSON *slave = NULL;
+//     cJSON_ArrayForEach(slave, getConfigValueObject2("modbus", "slaves")) {
+//         cJSON *idItem = cJSON_GetObjectItem(slave, "slaveId");
+//         if (cJSON_IsNumber(idItem) && idItem->valueint == slaveId) {
+//             return true;
+//         }
+//     }
+//     return false;
+// }
+bool isMbSlaveOutputExists(int pId, int pSlaveId) {
+    cJSON *slave = NULL;
+    cJSON_ArrayForEach(slave, mbSlaves) {
+        if (cJSON_IsNumber(cJSON_GetObjectItem(slave, "slaveId")) &&
+            cJSON_GetObjectItem(slave, "slaveId")->valueint == pSlaveId) {
+            char* model = cJSON_GetObjectItem(slave, "model")->valuestring;
+            // получить кол-во выходов у модели
+            for (int i = 0; i < sizeof(controllersData) / sizeof(controllersData[0]); i++) {
+                if (strcmp(controllersData[i].name, model) == 0)
+                    return pId < controllersData[i].outputs;
+            }
+
+        }            
+    }
+    return false;
+}
+
+bool isMbSlaveInputExists(int pId, int pSlaveId) {
+    cJSON *slave = NULL;
+    cJSON_ArrayForEach(slave, mbSlaves) {
+        if (cJSON_IsNumber(cJSON_GetObjectItem(slave, "slaveId")) &&
+            cJSON_GetObjectItem(slave, "slaveId")->valueint == pSlaveId) {
+            char* model = cJSON_GetObjectItem(slave, "model")->valuestring;
+            // получить кол-во выходов у модели
+            for (int i = 0; i < sizeof(controllersData) / sizeof(controllersData[0]); i++) {
+                if (strcmp(controllersData[i].name, model) == 0)
+                    return pId < controllersData[i].inputs;
+            }
+
+        }            
+    }
+    return false;
+}
+
+bool isMbSlaveExists(int pSlaveId) {
+    cJSON *slave = NULL;
+    cJSON_ArrayForEach(slave, mbSlaves) {
+        if (cJSON_IsNumber(cJSON_GetObjectItem(slave, "slaveId")) &&
+            cJSON_GetObjectItem(slave, "slaveId")->valueint == pSlaveId) {
+            return true;
+        }            
+    }
+    return false;
+}
+
+bool outputExists(int pId, int pSlaveId) {
+    cJSON *output = NULL;
+    cJSON_ArrayForEach(output, cJSON_GetObjectItem(IOConfig, "outputs")) {
+        uint8_t slaveId = 0;
+        uint8_t id = 255;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(output, "slaveId")))
+            slaveId = cJSON_GetObjectItem(output, "slaveId")->valueint;                
+        if (cJSON_IsNumber(cJSON_GetObjectItem(output, "id")))
+            id = cJSON_GetObjectItem(output, "id")->valueint;
+        if ((id == pId) && (slaveId == pSlaveId))
+            return true;                
+    }
+    return false;
+}
+
+bool inputExists(int pId, int pSlaveId) {
+    cJSON *input = NULL;
+    cJSON_ArrayForEach(input, cJSON_GetObjectItem(IOConfig, "inputs")) {
+        uint8_t slaveId = 0;
+        uint8_t id = 255;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(input, "slaveId")))
+            slaveId = cJSON_GetObjectItem(input, "slaveId")->valueint;                
+        if (cJSON_IsNumber(cJSON_GetObjectItem(input, "id")))
+            id = cJSON_GetObjectItem(input, "id")->valueint;
+        if ((id == pId) && (slaveId == pSlaveId))
+            return true;                
+    }
+    return false;
+}
+
+bool buttonExists(int pId) {
+    cJSON *input = NULL;
+    cJSON_ArrayForEach(input, cJSON_GetObjectItem(IOConfig, "inputs")) {
+        uint8_t id = 255;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(input, "id")))
+            id = cJSON_GetObjectItem(input, "id")->valueint;
+        if (id == pId)
+            return true;                
+    }
+    return false;
+}
+
+void correctIOConfig() {
+    // корректировка конфига устройства
+    // проверить наличие всех выходов, входов и кнопок относительно модели контроллера
+    bool changed = false;
+    ESP_LOGI(TAG, "correctIOConfig mbMode %s. Max outputs %d. Max inputs %d", 
+             mbMode, controllersData[controllerType].outputs,
+             controllersData[controllerType].inputs);
+
+    // удаление лишних выходов
+    cJSON *outputs = cJSON_GetObjectItem(IOConfig, "outputs");    
+    int size = cJSON_GetArraySize(outputs);
+    for (int i = size - 1; i >= 0; i--) {
+        cJSON *item = cJSON_GetArrayItem(outputs, i);
+        uint8_t slaveId = 0;
+        uint8_t id = 255;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "slaveId")))
+            slaveId = cJSON_GetObjectItem(item, "slaveId")->valueint;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "id")))
+            id = cJSON_GetObjectItem(item, "id")->valueint;
+        //ESP_LOGI(TAG, "id %d slaveId %d", id, slaveId);
+
+        if (((!strcmp(mbMode, "slave")) && slaveId > 0) || // если это слейв и у него есть не его выходы
+            ((slaveId == 0) && (id > controllersData[controllerType].outputs)) || // если выход больше чем можно           
+            ((!strcmp(mbMode, "master")) && slaveId > 0 && !isMbSlaveExists(slaveId)) || // если это мастер и не его слейв
+            ((!strcmp(mbMode, "master")) && slaveId > 0 && !isMbSlaveOutputExists(id, slaveId)) // если это мастер и выходов больше чем надо у слейвов
+            ) {
+            ESP_LOGW(TAG, "Deleting output with id %d slaveId %d", id, slaveId);
+            cJSON_DeleteItemFromArray(outputs, i);
+            changed = true;
+        }
+    }
+
+    // удаление лишних входов
+    cJSON *inputs = cJSON_GetObjectItem(IOConfig, "inputs");    
+    size = cJSON_GetArraySize(inputs);
+    for (int i = size - 1; i >= 0; i--) {
+        cJSON *item = cJSON_GetArrayItem(inputs, i);
+        uint8_t slaveId = 0;
+        uint8_t id = 255;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "slaveId")))
+            slaveId = cJSON_GetObjectItem(item, "slaveId")->valueint;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "id")))
+            id = cJSON_GetObjectItem(item, "id")->valueint;
+        //ESP_LOGI(TAG, "id %d slaveId %d", id, slaveId);
+
+        if ((id < 16) && // кнопки не удаляем
+            ((!strcmp(mbMode, "slave") && slaveId > 0) || // если это слейв и у него есть не его выходы
+            (slaveId == 0 && id > controllersData[controllerType].inputs) || // если выход больше чем можно           
+            ((!strcmp(mbMode, "master")) && slaveId > 0 && !isMbSlaveExists(slaveId)) || // если это мастер и не его слейв
+            ((!strcmp(mbMode, "master")) && slaveId > 0 && !isMbSlaveInputExists(id, slaveId))) // если это мастер и выходов больше чем надо у слейвов
+            ) {
+            ESP_LOGW(TAG, "Deleting input with id %d slaveId %d", id, slaveId);
+            cJSON_DeleteItemFromArray(inputs, i);
+            changed = true;
+        }
+    }
+ 
+    char *name = NULL;
+    name = malloc(25);
+    // Добавление недостающих outputs 
+    for (uint8_t i = 0; i < controllersData[controllerType].outputs; i++) {
+        if (!outputExists(i, 0)) {
+            cJSON *newOutput = cJSON_CreateObject();
+            cJSON_AddNumberToObject(newOutput, "id", i);
+            sprintf(name, "Out %d", i);                
+            cJSON_AddStringToObject(newOutput, "name", name);
+            cJSON_AddStringToObject(newOutput, "type", "s");
+            cJSON_AddStringToObject(newOutput, "state", "off");
+            cJSON_AddItemToArray(outputs, newOutput);
+            ESP_LOGW(TAG, "Adding new output with id %d", i);
+            changed = true;
+        }
+    }
+    // Добавление недостающих inputs
+    for (uint8_t i = 0; i < controllersData[controllerType].inputs; i++) {
+        if (!inputExists(i, 0)) {
+            cJSON *newInput = cJSON_CreateObject();
+            cJSON_AddNumberToObject(newInput, "id", i);
+            sprintf(name, "In %d", i);                
+            cJSON_AddStringToObject(newInput, "name", name);
+            cJSON_AddStringToObject(newInput, "type", "SW");
+            cJSON_AddStringToObject(newInput, "state", "off");
+            cJSON_AddItemToArray(inputs, newInput);
+            ESP_LOGW(TAG, "Adding new input with id %d", i);
+            changed = true;
+        }
+    }
+    // Добавление недостающих buttons
+    for (uint8_t i = 16; i < 16 + controllersData[controllerType].buttons; i++) {
+        if (!buttonExists(i)) {
+            cJSON *newButton = cJSON_CreateObject();
+            cJSON_AddNumberToObject(newButton, "id", i);
+            sprintf(name, "Svc %d", i);                
+            cJSON_AddStringToObject(newButton, "name", name);
+            cJSON_AddStringToObject(newButton, "type", "BTN");            
+            cJSON_AddItemToArray(inputs, newButton);
+            ESP_LOGW(TAG, "Adding new button with id %d", i);
+            changed = true;
+        }
+    }
+
+    // modbus
+    // добавить модбас выходы всех устройств
+    uint8_t inputsQty, outputsQty;
+    cJSON *slave = NULL;
+    cJSON_ArrayForEach(slave, mbSlaves) {
+        if (cJSON_IsNumber(cJSON_GetObjectItem(slave, "slaveId"))) {
+            uint8_t slaveId = cJSON_GetObjectItem(slave, "slaveId")->valueint;
+            inputsQty = 0;
+            outputsQty = 0;
+            char* model = cJSON_GetObjectItem(slave, "model")->valuestring;
+            // получить кол-во по модели
+            for (int i = 0; i < sizeof(controllersData) / sizeof(controllersData[0]); i++) {
+                if (strcmp(controllersData[i].name, model) == 0) {
+                    inputsQty = controllersData[i].inputs;
+                    outputsQty = controllersData[i].outputs;
+                }
+            }
+            for (uint8_t i = 0; i < outputsQty; i++) {
+                if (!outputExists(i, slaveId)) {
+                    cJSON *newOutput = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(newOutput, "id", i);
+                    sprintf(name, "Sl %d Out %d", slaveId, i);                
+                    cJSON_AddStringToObject(newOutput, "name", name);
+                    cJSON_AddNumberToObject(newOutput, "slaveId", slaveId);
+                    cJSON_AddStringToObject(newOutput, "state", "off");
+                    cJSON_AddItemToArray(outputs, newOutput);
+                    ESP_LOGW(TAG, "Adding new output with id %d slaveId %d", i, slaveId);
+                    changed = true;
+                }
+            }
+            for (uint8_t i = 0; i < inputsQty; i++) {
+                if (!inputExists(i, slaveId)) {
+                    cJSON *newInput = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(newInput, "id", i);
+                    sprintf(name, "Sl %d In %d", slaveId, i);                
+                    cJSON_AddStringToObject(newInput, "name", name);
+                    cJSON_AddNumberToObject(newInput, "slaveId", slaveId);
+                    cJSON_AddStringToObject(newInput, "state", "off");
+                    cJSON_AddItemToArray(inputs, newInput);
+                    ESP_LOGW(TAG, "Adding new input with id %d slaveId %d", i, slaveId);
+                    changed = true;
+                }
+            }
+        }            
+    }
+
+    free(name);
+    if (changed) {
+        ESP_LOGI(TAG, "Config changed. Saving");
+        saveConfig();
+    }
+}
+
 void wsMsg(char *message) {
 	ESP_LOGI(TAG, "wsMsg %s", message);
-    //ESP_LOG_BUFFER_HEXDUMP("message", message, strlen(message)+1, CONFIG_LOG_DEFAULT_LEVEL);
     char *response;
+    char *type;
     cJSON *json = cJSON_Parse(message); 
     cJSON *payload = NULL;
     if(!cJSON_IsObject(json)) {
-        ESP_LOGE(TAG, "Can't parse message.");
+        ESP_LOGE(TAG, "WS Message isn't json");
         return;
     }
     //ESP_LOGI(TAG, "%s", message);
     if (cJSON_IsObject(cJSON_GetObjectItem(json, "payload"))) {
         payload = cJSON_GetObjectItem(json, "payload");
     }
-    char *type;
+    // у сообщения обязательно должен быть type и payload (опционально)
     if (cJSON_IsString(cJSON_GetObjectItem(json, "type"))) {
         type = cJSON_GetObjectItem(json, "type")->valuestring;
         if (!strcmp(type, "AUTHORIZED")) {
-            // если READY то он прилинкован и готов общаться                        
             WSSetAuthorized();
             sendInfo();
             response = getDeviceIOStates();
             WSSendMessage(response);  
             free(response);
-        // } else if (!strcmp(type, "AUTHORIZED")) { 
-        //     // контроллера может не быть в базе, этот метод его добавит      
-        //     ESP_LOGI(TAG, "Authorized");
-        //     WSSendMessageForce("{\"type\":\"CHECK\"}");
         } else if (!strcmp(type, "INFO")) {       
             // запрос информации   
             sendInfo();            
-        } else if (!strcmp(type, "GETDEVICECONFIG")) {
-            response = getDeviceConfigMsg();
+        } else if (!strcmp(type, "GETIOConfig")) {
+            response = getIOConfigMsg();
             WSSendMessageForce(response);
             free(response);                     
-        } else if (!strcmp(type, "SETDEVICECONFIG") && payload != NULL) {
+        } else if (!strcmp(type, "SETIOConfig") && payload != NULL) {
             ESP_LOGW(TAG, "Updating device config");
             if (cJSON_IsObject(payload)) {
                 SemaphoreHandle_t sem = getSemaphore();
                 if (xSemaphoreTake(sem, portMAX_DELAY) == pdTRUE) {
-                    cJSON_Delete(deviceConfig);
+                    cJSON_Delete(IOConfig);
                     cJSON_DetachItemFromObject(json, "payload");
-                    deviceConfig = payload;
+                    IOConfig = payload;
+                    correctIOConfig();
                     xSemaphoreGive(sem);
-                    saveDeviceConfig();
+                    saveConfig();
                 }
-                ESP_LOGI(TAG, "deviceConfig is object %d", cJSON_IsObject(deviceConfig));
-                WSSendMessageForce("{\"type\":\"SETDEVICECONFIG\", \"payload\": {\"message\": \"OK\"}}");
+                ESP_LOGI(TAG, "IOConfig is object %d", cJSON_IsObject(IOConfig));
+                WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"OK\"}}");
             } else {
                 // TODO : send error to WS
-                WSSendMessageForce("{\"type\":\"SETDEVICECONFIG\", \"payload\": {\"message\": \"Ne OK\"}}");
+                WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"Ne OK\"}}");
             }
         // } else if (!strcmp(type, "UPDATEOUTPUT") && payload != NULL) {
         //     updateOutput(payload);
@@ -1694,7 +1776,7 @@ void wsMsg(char *message) {
                 if (cJSON_IsString(cJSON_GetObjectItem(payload, "action"))) {
                     pValue = cJSON_GetObjectItem(payload, "action")->valuestring;
                 }               
-                processInputEvents(slaveId, cJSON_GetObjectItem(payload, "input")->valueint, pValue, 255);                                
+                processInputEvents(slaveId, cJSON_GetObjectItem(payload, "input")->valueint, pValue, 255);
             } else if (cJSON_IsNumber(cJSON_GetObjectItem(payload, "output"))) {
                 uint8_t pOutput = cJSON_GetObjectItem(payload, "output")->valueint;
                             
@@ -1704,8 +1786,8 @@ void wsMsg(char *message) {
                 if (cJSON_IsString(cJSON_GetObjectItem(payload, "action"))) {
                     pValue = cJSON_GetObjectItem(payload, "action")->valuestring;
                 }               
-                if (cJSON_IsNumber(cJSON_GetObjectItem(payload, "slaveid"))) {
-                    pSlaveId = cJSON_GetObjectItem(payload, "slaveid")->valueint;
+                if (cJSON_IsNumber(cJSON_GetObjectItem(payload, "slaveId"))) {
+                    pSlaveId = cJSON_GetObjectItem(payload, "slaveId")->valueint;
                 }         
                 ESP_LOGI(TAG, "ACTION. output %d slaveId %d action %s", pOutput, pSlaveId, pValue);
                 // TODO : new modbus process
@@ -1724,6 +1806,9 @@ void wsMsg(char *message) {
         } else if (!strcmp(type, "SENDLOGS") && payload != NULL) {
             wsSendLogs = cJSON_IsTrue(cJSON_GetObjectItem(payload, "send"));                 
             ESP_LOGI(TAG, "Sending logs to websocket %s", wsSendLogs ? "enabled" : "disabled");
+        } else if (!strcmp(type, "REBOOT")) {            
+            ESP_LOGW(TAG, "Reboot request");
+            reboot = true;
         }
     }
     cJSON_Delete(json);
@@ -1741,9 +1826,8 @@ void wsEvent(uint8_t event) {
 }
 
 void initWS() {
-    if (getSettingsValueBool2("cloud", "enabled")) {
-        char *jwt = NULL;                
-        char *wsURL = getSettingsValueString2("cloud", "address");
+    if (getConfigValueBool("network/cloud/enabled")) {
+        char *jwt = NULL;                        
         loadTextFile("/certs/jwt.pem", &jwt);
         if (jwt == NULL) {
             ESP_LOGI(TAG, "take JWT from firmware...");
@@ -1751,7 +1835,7 @@ void initWS() {
             jwt = (char*)malloc(len+1);
             strncpy(jwt, jwt_start, len);
         }
-    	WSinit(wsURL, &wsMsg, &wsEvent, jwt, getSettingsValueBool2("cloud", "log"));            
+    	WSinit(getConfigValueString("network/cloud/address"), &wsMsg, &wsEvent, jwt, getConfigValueBool("network/cloud/log"));            
     }
 }
 
@@ -1781,12 +1865,13 @@ void modBusAction(uint8_t output, char *action) {
 }
 
 void initModBus() {
-    if (getSettingsValueBool2("modbus", "enabled")) {
-        if (!strcmp(getSettingsValueString2("modbus", "mode"), "master")) {
-            MBInitMaster(deviceConfig, &modBusEvent, getSettingsValueObject2("modbus", "slaves"), controllerType > 2);
+    if (getConfigValueBool("modbus/enabled")) {
+        if (!strcmp(getConfigValueString("modbus/mode"), "master")) {
+            mbSlaves = getConfigValueObject("modbus/slaves");
+            MBInitMaster(IOConfig, &modBusEvent, mbSlaves, controllerType > 2);
             mbMode = "master";
-        } else if (!strcmp(getSettingsValueString2("modbus", "mode"), "slave")) {
-            mbSlaveId = getSettingsValueInt2("modbus", "slaveid");
+        } else if (!strcmp(getConfigValueString("modbus/mode"), "slave")) {
+            mbSlaveId = getConfigValueInt("modbus/slaveId");
             MBInitSlave(mbSlaveId, &modBusAction, controllerType > 2);
             mbSlave = true;
             mbMode = "slave";            
@@ -1814,7 +1899,7 @@ void mqttEvent(uint8_t event) {
 void mqttData(char* topic, char* data) {
     ESP_LOGW(TAG, "parseTopic %s %s", topic, data);
     char str[100];
-    strcpy(str, getSettingsValueString("hostname"));
+    strcpy(str, getConfigValueString("hostname"));
     strcat(str, "/in/\0");
     if (!strstr(topic, str)) {
         // это не топики своего устройства. Проверить внешний список
@@ -1892,8 +1977,8 @@ void mqttData(char* topic, char* data) {
             ESP_LOGE(TAG, "data is not a json");
             return;
         }
-        if (cJSON_IsNumber(cJSON_GetObjectItem(jData, "slaveid")))
-            slaveId = cJSON_GetObjectItem(jData, "slaveid")->valueint;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(jData, "slaveId")))
+            slaveId = cJSON_GetObjectItem(jData, "slaveId")->valueint;
         if (cJSON_IsNumber(cJSON_GetObjectItem(jData, "output")))
             output = cJSON_GetObjectItem(jData, "output")->valueint;
         if (cJSON_IsString(cJSON_GetObjectItem(jData, "action")))
@@ -1909,7 +1994,7 @@ void mqttData(char* topic, char* data) {
         token = strtok(NULL, "/"); // in
         if (token == NULL)
             return;
-        token = strtok(NULL, "/"); // slaveid
+        token = strtok(NULL, "/"); // slaveId
         if (token == NULL)
             return;
         slaveId = atoi(token);    
@@ -1920,7 +2005,7 @@ void mqttData(char* topic, char* data) {
         action = toLower(data);                
     }
 
-    ESP_LOGI(TAG, "slaveid %d, output %d, action %s", slaveId, output, action);
+    ESP_LOGI(TAG, "slaveId %d, output %d, action %s", slaveId, output, action);
 
     if (xSemaphoreTake(sem_busy, portMAX_DELAY) == pdTRUE) {
         if (slaveId) {
@@ -1950,14 +2035,15 @@ int custom_vprintf(const char *fmt, va_list args) {
 }
 
 void initMQTT() {
-    if (getSettingsValueBool2("mqtt", "enabled")) {
+    if (getConfigValueBool("mqtt/enabled")) {
+        jMQTTTopics = getConfigValueObject("mqtt/topics");
         MQTTInit(&mqttData, &mqttEvent);
     }
 }
 
 void initFTP(uint32_t address) {
-    if (getSettingsValueBool2("ftp", "enabled")) { 
-        FTPinit(getSettingsValueString2("ftp", "user"), getSettingsValueString2("ftp", "pass"), address);
+    if (getConfigValueBool("network/ftp/enabled")) { 
+        FTPinit(getConfigValueString("network/ftp/user"), getConfigValueString("network/ftp/pass"), address);
     }
 }
 
@@ -1970,121 +2056,32 @@ void sntpEvent() {
     ESP_LOGI(TAG, "Clock set result %s", esp_err_to_name(setClock()));        
 }
 
-bool mbSlaveIdExists(int slaveId) {
-    cJSON *slave = NULL;
-    cJSON_ArrayForEach(slave, getSettingsValueObject2("modbus", "slaves")) {
-        cJSON *idItem = cJSON_GetObjectItem(slave, "id");
-        if (cJSON_IsNumber(idItem) && idItem->valueint == slaveId) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool outputExists(int pId, int pSlaveId) {
-    cJSON *output = NULL;
-    cJSON_ArrayForEach(output, cJSON_GetObjectItem(deviceConfig, "outputs")) {
-        uint8_t slaveId = 0;
-        uint8_t id = 255;
-        if (cJSON_IsNumber(cJSON_GetObjectItem(output, "slaveId")))
-            slaveId = cJSON_GetObjectItem(output, "slaveId")->valueint;                
-        if (cJSON_IsNumber(cJSON_GetObjectItem(output, "id")))
-            id = cJSON_GetObjectItem(output, "id")->valueint;
-        if ((id == pId) && (slaveId == pSlaveId))
-            return true;                
-    }
-    return false;
-}
-
-void correctDeviceConfig() {
-    // корректировка конфига устройства
-    cJSON *outputs = cJSON_GetObjectItem(deviceConfig, "outputs");
-    
-    int size = cJSON_GetArraySize(outputs);
-    for (int i = size - 1; i >= 0; i--) {
-        cJSON *item = cJSON_GetArrayItem(outputs, i);
-        uint8_t slaveId = 0;
-        uint8_t id = 255;
-        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "slaveId")))
-            slaveId = cJSON_GetObjectItem(item, "slaveId")->valueint;
-        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "id")))
-            id = cJSON_GetObjectItem(item, "id")->valueint;
-
-        ESP_LOGI(TAG, "id %d slaveid %d", id, slaveId);
-
-        if ((slaveId == 0 && id > controllersData[controllerType].outputs) ||
-            (slaveId > 0 && !mbSlaveIdExists(slaveId))) {
-            ESP_LOGW(TAG, "Deleting item with id %d slaveid %d", id, slaveId);
-            cJSON_DeleteItemFromArray(outputs, i);
-        }
-    }
-
- /*   
-    // Удаление неподходящих элементов (в обратном порядке!)
-    int index = 0;
-    cJSON *item = NULL;
-    cJSON_ArrayForEach(item, outputs) {
-        cJSON *next = item->next; // сохранить next, т.к. item может быть удалён
-
-        uint8_t slaveId = 0;
-        uint8_t id = 255;
-        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "slaveId")))
-            slaveId = cJSON_GetObjectItem(item, "slaveId")->valueint;                
-        if (cJSON_IsNumber(cJSON_GetObjectItem(item, "id")))
-            id = cJSON_GetObjectItem(item, "id")->valueint;
-ESP_LOGI(TAG, "id %d slaveid %d", id, slaveId);
-        if ((slaveId == 0 && id > controllersData[controllerType].outputs) ||
-            (slaveId > 0 && !mbSlaveIdExists(slaveId))) {
-            cJSON_DeleteItemFromArray(outputs, index);
-ESP_LOGW(TAG, "Deleting item with id %d slaveid %d", id, slaveId);            
-            continue;
-        }
-
-        index++;
-    }
-*/
-
-    char *name = NULL;
-    name = malloc(15);
-    // Добавление недостающих output'ов 
-    for (uint8_t i = 0; i < controllersData[controllerType].outputs; i++) {
-        if (!outputExists(i, 0)) {
-            cJSON *newOutput = cJSON_CreateObject();
-            cJSON_AddNumberToObject(newOutput, "id", i);
-            sprintf(name, "Out %d", i);                
-            cJSON_AddStringToObject(newOutput, "name", name);
-            cJSON_AddStringToObject(newOutput, "type", "s");
-            cJSON_AddStringToObject(newOutput, "state", "off");
-            cJSON_AddItemToArray(outputs, newOutput);
-        }
-    }
-    free(name);
-}
-
 esp_err_t initCore(SemaphoreHandle_t sem) {
-	//createSemaphore();    
-    ESP_LOGI(TAG, "Hostname %s, description %s", getSettingsValueString("hostname"), getSettingsValueString("description"));
+	//createSemaphore();
+    setRGBFace("yellow");
+    char *hostname = getConfigValueString("hostname");
+    char *description = getConfigValueString("description");    
+    ESP_LOGI(TAG, "Hostname %s, description %s", SS(hostname), SS(description));
+
     sem_busy = sem;
     initHardware(sem);    
 	determinateControllerType();
 	ESP_LOGI(TAG, "Controllertype is %s", controllersData[controllerType].name);
     if (controllerType == UNKNOWN) {
-        ESP_LOGE(TAG, "Unknown controller type!");
-        setRGBFace("yellow");
+        ESP_LOGE(TAG, "Unknown controller type!");        
         //return;
     }
-	if (loadDeviceConfig() != ESP_OK) {
-        ESP_LOGE(TAG, "Can't read config!");
-        setRGBFace("red");
-        return ESP_FAIL;
-    }
-    if (loadScheduler() != ESP_OK) {
-        ESP_LOGI(TAG, "Can't read scheduler config.");
-    }
-    if (loadMqttTopics() != ESP_OK) {
-        ESP_LOGI(TAG, "Can't read mqtttopics config.");
-    }
-    correctDeviceConfig();
+    IOConfig = getConfigValueObject("io");
+	if (IOConfig == NULL || 
+        (cJSON_IsObject(IOConfig) && !cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "outputs"))) ||
+        (cJSON_IsObject(IOConfig) && !cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "inputs"))) ) {
+        createIOConfig();
+        bool res = setConfigValueObject("io", IOConfig);
+        ESP_LOGI(TAG, "save result %d", res);
+        saveConfig();
+    }    
+    initModBus();
+    correctIOConfig();
     initInputs();
 	initOutputs();    
     xTaskCreate(&serviceTask, "serviceTask", 4096, NULL, 5, NULL);    
@@ -2095,8 +2092,7 @@ esp_err_t initCore(SemaphoreHandle_t sem) {
         // чтобы сеть не стартовала и запустилась AP
     } 
     startInputTask();
-    initScheduler();	
-    initModBus();    
+    initScheduler();	    
     esp_log_set_vprintf(&custom_vprintf);
     setRGBFace("green"); // TODO : сделать зеленый когда все поднялось. И продумать цвета
     return ESP_OK;
@@ -2111,7 +2107,7 @@ esp_err_t initCore(SemaphoreHandle_t sem) {
 * publish mqtt info every 1 minute?
 * publish ws
 * ws
-* mqtt взаимодействие с другими устройствами?. Сделать маппинг, например, /Device1/0/0/ON -> slaveid0 output1 on
+* mqtt взаимодействие с другими устройствами?. Сделать маппинг, например, /Device1/0/0/ON -> slaveId0 output1 on
 + hardware. на старом контроллере кнопки начинаются с 16 айди, а на новом почему-то с 8, надо где-то исправить
 - разобраться с eth. Работает на другой плате
 - часы надо сделать, пока не получилось

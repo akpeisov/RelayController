@@ -1,0 +1,62 @@
+controller client to server
+-> HELLO (type={web/relaycontroller}, token)
+<- AUTHORIZED / error
+-> CHECK (only check)
+<- READY / GETDEVICECONFIG
+
+
+web client to server
+-> HELLO (type={web/relaycontroller}, token)
+<- AUTHORIZED / error
+
+
+-- MODBUS --
+конфигурирование на фронте
+Мастер. Установка режима мастер. Выбор слейвов. Заполнение массива slaves
+Нужен флаг на каждом слейве что сконфигурирован, т.к. нужно заполнить выходы и входы слейва на мастер.
+Может в массиве указывать тип слейва, чтобы мастер знал сколько добавить входов и выходов, без учета их имен
+
+Слейв. Установка режима слейв. Выбор айди.
+
+
+
+
+
+ESP32 esp-idf.
+Есть OTA. Необходимо сделать так чтобы после подключения сети было обращение на сервер и каким-то образом проверялось наличие обновлений автоматически.
+На сервере будет лежать свежий bin файл с прошивкой. Вот только мне непонятно как проверять версию, придется каждый раз скачивать файл и проверять или как это правильно делается? Напиши подробно и с примерами.
+
+"modbus": {
+        "enabled": true,
+        "mode": "master",
+        "slaves": [
+            {"id": 1,
+             "type": "RCV1S"},
+            {"id": 2,
+             "type": "RCV2S"} 
+        ]
+    }
+
+
+esp-idf. Есть код.
+
+cJSON *childOutput = cJSON_GetObjectItem(deviceConfig, "outputs")->child;
+    while (childOutput) {
+        uint8_t slaveId = 255;
+        uint8_t id = 255;
+        if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")))
+            slaveId = cJSON_GetObjectItem(childOutput, "slaveId")->valueint;                
+        if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id")))
+            id = cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id"))->valueint;
+     
+        childOutput = childOutput->next;
+    }
+
+Массив slaves это cJSON_Array, пример, [
+            {"id": 1,
+             "type": "RCV1S"},
+            {"id": 2,
+             "type": "RCV2S"} 
+        ]
+Задача. Посмотреть весь массив outputs и проверить если id больше константы maxId и slaveId = 255 то удалить такой элемент из массива. Если же slaveId не равен 255 и при этом он отсутствует в массиве slaves то такой элемент тоже удалить.
+Далее проверить наличие всех id от 0 до maxId при slaveId=255. Если какого-то id нет то добавить новый элемент в массив outputs с недостающим id.

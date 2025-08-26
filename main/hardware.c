@@ -36,8 +36,8 @@ static bool clockPresent = false;
 typedef struct {
     i2c_dev_t device;
     uint8_t address;
-} devices_t;
-static devices_t devices[9];
+} device_t;
+static device_t devices[9];
 
 void sendTo595(uint8_t *values, uint8_t count) {
     // Функция просто отправит данные в 595 
@@ -113,7 +113,7 @@ void initHardware(SemaphoreHandle_t sem) {
     }
 }
 
-esp_err_t initPCA9685(i2c_dev_t dev, bool setValues) {
+esp_err_t initPCA9685hw(i2c_dev_t dev, bool setValues) {
     esp_err_t err = ESP_FAIL;
     //if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {        
         err = pca9685_init(&dev);
@@ -136,7 +136,6 @@ esp_err_t initPCA9685(i2c_dev_t dev, bool setValues) {
     // 	return err;
     // }
 }
-
 
 void setI2COut(uint8_t adr, uint8_t num, uint16_t value) {
     if (!i2c) return;
@@ -223,12 +222,13 @@ void relayTask(void *pvParameter) {
     vTaskDelete(NULL);
 }
 
-void i2cScan() {
+void i2cScan(uint8_t found[], uint8_t *size) {
     i2c_dev_t dev = { 0 };
     dev.cfg.sda_io_num = SDA;
     dev.cfg.scl_io_num = SCL;
     dev.cfg.master.clk_speed = 100000;
-
+    // uint8_t found[20];
+    // uint8_t fCnt = 0;
     esp_err_t res;
     printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
     printf("00:         ");
@@ -240,38 +240,77 @@ void i2cScan() {
         dev.addr = addr;
         res = i2c_dev_probe(&dev, I2C_DEV_WRITE);
 
-        if (res == 0)
+        if (res == 0) {
+            found[(*size)++] = addr;
             printf(" %.2x", addr);
+        }
         else
             printf(" --");
     }
     printf("\n");
+}
 
-    // bool valid;
-    // struct tm time = {
-    //     .tm_year = 120, // years since 1900
-    //     .tm_mon  = 3,   // months since January
-    //     .tm_mday = 3,
-    //     .tm_hour = 12,
-    //     .tm_min  = 35,
-    //     .tm_sec  = 10,
-    //     .tm_wday = 0    // days since Sunday
-    // };
-    // memset(&dev, 0, sizeof(i2c_dev_t));
-    // pcf8563_init_desc(&dev, 0, SDA, SCL);        
-    // esp_err_t r = pcf8563_get_time(&dev, &time, &valid);
-    // ESP_LOGI(TAG, "pcf8563_get_time %s", esp_err_to_name(r));    
+bool isMatched(uint8_t *array, uint8_t arraySize, uint8_t *pattern, uint8_t patternSize) {
+    for (uint8_t i = 0; i < patternSize; i++) {
+        bool found = false;
+        for (uint8_t j = 0; j < arraySize; j++) {
+            if (array[j] == pattern[i]) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+bool isInArray(uint8_t *array, uint8_t arraySize, uint8_t element) {
+    for (uint8_t i = 0; i < arraySize; i++) {
+        if (array[i] == element)
+            return true;        
+    }
+    return false;
+}
+
+esp_err_t initPCA9685(uint8_t devNum, uint8_t *foundDevices, uint8_t devicesCount) {
+    esp_err_t err = ESP_ERR_NOT_FOUND;
+    if (isInArray(foundDevices, devicesCount, devices[devNum].address)) {
+        pca9685_init_desc(&devices[devNum].device, devices[devNum].address, I2CPORT, SDA, SCL);
+        err = initPCA9685hw(devices[devNum].device, false);
+        if (err == ESP_OK)
+            ESP_LOGI(TAG, "PCA9685 with address 0x%x inited OK", devices[devNum].address);
+        else
+            ESP_LOGE(TAG, "Can't init PCA9685 address 0x%x", devices[devNum].address);
+    }
+    return err;
 }
 
 esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {    
-    // gpio_set_pull_mode(SDA, GPIO_PULLUP_ONLY);
-    // gpio_set_pull_mode(SCL, GPIO_PULLUP_ONLY);
-
-    i2cdev_init();
-    i2cScan();
-
     esp_err_t err = ESP_FAIL;  
     *ctrlType = UNKNOWN; 
+
+    i2cdev_init();
+    uint8_t foundDevices[20];
+    uint8_t devicesCount = 0;
+    i2cScan(foundDevices, &devicesCount);
+
+    uint8_t aRCV2S[] = {0x20, 0x21, 0x40, 0x41};
+    uint8_t aRCV2M[] = {0x20, 0x21, 0x22, 0x23, 0x27, 0x40, 0x41, 0x42};
+    uint8_t aRCV2B[] = {0x20, 0x21, 0x22, 0x23, 0x40, 0x41, 0x42};
+        
+    if (isMatched(foundDevices, devicesCount, aRCV2M, sizeof(aRCV2M)/sizeof(uint8_t)))
+        *ctrlType = RCV2M;
+    else if (isMatched(foundDevices, devicesCount, aRCV2B, sizeof(aRCV2B)/sizeof(uint8_t)))
+        *ctrlType = RCV2B;
+    else if (isMatched(foundDevices, devicesCount, aRCV2S, sizeof(aRCV2S)/sizeof(uint8_t)))
+        *ctrlType = RCV2S;    
+
+    if (!devicesCount || *ctrlType == UNKNOWN) {
+        ESP_LOGW(TAG, "No i2c device found or controllerType is unknown");
+        return err;
+    }
+    
     /*
     // должна вернуть успех если есть минимальный набор
 	RCV2S
@@ -280,21 +319,28 @@ esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {
     0x21 - 8574 (face)
 	0x40 - 9685 (relay) 15 bit to 7 bit 8574
     0x41 - 9685 (face)	15 bit to 7 bit 8574
-
+    ---
     RCV2B
 	0x51 - clock
 	0x20 - 8574 (relay)
     0x21 - 8574 (face)
     0x22 - 8574 (relay)
     0x23 - 8574 (face)
-
 	0x40 - 9685 (relay) 
     0x41 - 9685 (face)	
     0x42 - 9685 (face)	
-
+    ---
     RCV2M
-    0x27 - 8574 (face)    
+    0x20 - 8574 (relay)
+    0x21 - 8574 (face)
+    0x22 - 8574 (relay)
+    0x23 - 8574 (face)
+    0x27 - 8574 (face rgb)  
+    0x40 - 9685 (relay)  
+    0x41 - 9685 (face)  
+    0x42 - 9685 (face)   
 
+    ---
     0x18 - i2c-ow DS2484
 	*/
     for (uint8_t i=0; i<9;i++)
@@ -312,125 +358,56 @@ esp_err_t initI2Cdevices(enum controllerTypes *ctrlType) {
     // medium
     devices[8].address = 0x27; // 8574 (face board)
 
-
-    // D6MG
-    // relay 0x20, 0x22. face 0x21, 0x23
-
     // у маленького и на плате реле и на плате индикации 15 bit 9685 соединен с 7 bit 8574
 
     // TODO : часы сделать
-    pcf8563_init_desc(&devices[0].device, 0, SDA, SCL);        
-    struct tm timeinfo;
-    bool valid;
-    if (pcf8563_get_time(&devices[0].device, &timeinfo, &valid) == ESP_OK) {
-        clockPresent = true;
-        ESP_LOGI(TAG, "%04d-%02d-%02d %02d:%02d:%02d, %s\n", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1,
-                 timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, valid ? "VALID" : "NOT VALID");
-        if (valid && (timeinfo.tm_year + 1900 >= 2025)) {
-            time_t now;
-            //struct tm timeinfo;
-            time(&now);
-            
-            //setenv("TZ", getSettingsValueString("ntpTZ"), 1);
-            //tzset();
-            localtime_r(&now, &timeinfo);
-            ESP_LOGI(TAG, "Clock set");
+    if (isInArray(foundDevices, devicesCount, devices[0].address)) {
+        pcf8563_init_desc(&devices[0].device, 0, SDA, SCL);        
+        struct tm timeinfo;
+        bool valid;
+        if (pcf8563_get_time(&devices[0].device, &timeinfo, &valid) == ESP_OK) {
+            clockPresent = true;
+            ESP_LOGI(TAG, "%04d-%02d-%02d %02d:%02d:%02d, %s\n", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1,
+                     timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, valid ? "VALID" : "NOT VALID");
+            if (valid && (timeinfo.tm_year + 1900 >= 2025)) {
+                time_t now;
+                //struct tm timeinfo;
+                time(&now);
+                
+                //setenv("TZ", getSettingsValueString("ntpTZ"), 1);
+                //tzset();
+                localtime_r(&now, &timeinfo);
+                ESP_LOGI(TAG, "Clock set");
+            }
+            // if (!valid) {
+            //         struct tm time = {
+            //         .tm_year = 120, // years since 1900
+            //         .tm_mon  = 3,   // months since January
+            //         .tm_mday = 3,
+            //         .tm_hour = 12,
+            //         .tm_min  = 35,
+            //         .tm_sec  = 10,
+            //         .tm_wday = 0    // days since Sunday
+            //     };
+            //     ESP_ERROR_CHECK(pcf8563_set_time(&dev, &time));
+
+            // }
+        } else {
+            ESP_LOGI(TAG, "No clock chip present");
         }
-        // if (!valid) {
-        //         struct tm time = {
-        //         .tm_year = 120, // years since 1900
-        //         .tm_mon  = 3,   // months since January
-        //         .tm_mday = 3,
-        //         .tm_hour = 12,
-        //         .tm_min  = 35,
-        //         .tm_sec  = 10,
-        //         .tm_wday = 0    // days since Sunday
-        //     };
-        //     ESP_ERROR_CHECK(pcf8563_set_time(&dev, &time));
-
-        // }
-    } else {
-        ESP_LOGI(TAG, "No clock chip present");
     }
 
-    // init 8574
-    uint8_t inputs;
-    // входы
     pcf8574_init_desc(&devices[1].device, devices[1].address, I2CPORT, SDA, SCL);
-    err = pcf8574_port_read(&devices[1].device, &inputs);
-    if (err != ESP_OK) {
-        // должен быть у всех видов контроллеров
-        ESP_LOGE(TAG, "Can't read from 8574 #1. Relay board error!");
-        return err;
-    }
-
-    // кнопки
-    pcf8574_init_desc(&devices[2].device, devices[2].address, I2CPORT, SDA, SCL);    
-    err = pcf8574_port_read(&devices[2].device, &inputs);
-    if (err != ESP_OK) {
-        // должен быть у всех видов контроллеров
-        ESP_LOGE(TAG, "Can't read from 8574 #2. Face board error!");
-        return err;
-    }
-
-    // init 9685 (relay)
-    // реле
-    pca9685_init_desc(&devices[3].device, devices[3].address, I2CPORT, SDA, SCL);
-    err = initPCA9685(devices[3].device, false);
-    if (err != ESP_OK) {
-        // должен быть у всех видов контроллеров
-        ESP_LOGE(TAG, "Can't init PCA9685 #3. Relay board not connected?");
-        return err;
-    }            
-
-    // init 9685 (face)
-    // светодиоды
-    pca9685_init_desc(&devices[4].device, devices[4].address, I2CPORT, SDA, SCL);
-    err = initPCA9685(devices[4].device, true);
-    if (err != ESP_OK) {
-        // должен быть у всех видов контроллеров
-        ESP_LOGE(TAG, "Can't init PCA9685 #4. Face board not connected?");
-        return err;
-    }
-    *ctrlType = RCV2S; 
-    
-    // далее идет большой контроллер, поэтому если нет, то возвратить успех
+    pcf8574_init_desc(&devices[2].device, devices[2].address, I2CPORT, SDA, SCL);
     pcf8574_init_desc(&devices[5].device, devices[5].address, I2CPORT, SDA, SCL);
-    err = pcf8574_port_read(&devices[5].device, &inputs);
-    if (err != ESP_OK) {
-        // ESP_LOGE(TAG, "Can't read from 8574 #5. Relay big board error!");
-        // return err;        
-        goto exit;
-    }
-
     pcf8574_init_desc(&devices[6].device, devices[6].address, I2CPORT, SDA, SCL);
-    err = pcf8574_port_read(&devices[6].device, &inputs);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Can't read from 8574 #6. Face big board error!");
-        return err;
-    }
+    //pcf8574_init_desc(&devices[8].device, devices[8].address, I2CPORT, SDA, SCL);
 
-    pca9685_init_desc(&devices[7].device, devices[7].address, I2CPORT, SDA, SCL);
-    err = initPCA9685(devices[7].device, true);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Can't init PCA9685 #7. No extra face");
-        return err;
-    }
-    // если дошло до этого места то считаем что это большой контроллер
-    *ctrlType = RCV2B;
-
-    // есть только у medium 
-    pcf8574_init_desc(&devices[8].device, devices[8].address, I2CPORT, SDA, SCL);
-    err = pcf8574_port_read(&devices[8].device, &inputs);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Can't read from 8574 #8. RGB not present.");
-        goto exit;
-    } else {        
-        // если дошло до этого места то считаем что это средний контроллер
-        *ctrlType = RCV2M;
-    }
-
-exit:
+    //3,4,7    
+    initPCA9685(4, foundDevices, devicesCount);
+    initPCA9685(7, foundDevices, devicesCount);
+    initPCA9685(3, foundDevices, devicesCount);
+ 
     gpio_set_level(IO_EN, 0);
     setRGBFace("yellow");  
     gpio_set_level(IO_REN, 0);
@@ -474,48 +451,6 @@ esp_err_t getClock(struct tm time) {
     return ret;
 }
 
-/*
-enum controllerTypes determinateControllerTypeHW() {
-    // TODO : сделать для остальных новых
-    ESP_LOGI(TAG, "determinateControllerTypeHW");
-    enum controllerTypes controllerType = UNKNOWN;
-    if (i2c) {
-        // это новые контроллеры
-        setI2COut(4, 15, 4096); // low level
-        if (readFrom8574(2) & 0x80) {
-            ESP_LOGI(TAG, "readFrom8574(2) & 0x80");
-            setI2COut(4, 15, 0);
-            if ((readFrom8574(2) & 0x80) == 0) {
-                ESP_LOGI(TAG, "readFrom8574(2) & 0x80 false");
-                controllerType = RCV2S;
-            } else {
-                ESP_LOGI(TAG, "readFrom8574(2) & 0x80 no data");
-            }
-        } else {
-            ESP_LOGI(TAG, "readFrom8574 %d", readFrom8574(2));
-        }
-        setI2COut(4, 15, 0);        
-    }
-    return controllerType;
-*/
-
-
-/*
-    ESP_LOGI(TAG, "Determinating type...");
-        vTaskDelay(2000 / portTICK_RATE_MS);
-        readInputs(values, 1);
-        // ESP_LOGW(TAG, "read 1 %d", values[0]);
-        if (values[0] & 0x01) {
-            values[0] = 0;
-            sendTo595(values, 1);
-            readInputs(values, 1);
-            // ESP_LOGW(TAG, "read 2 %d", values[0]);
-            if (!(values[0] & 0x01)) 
-                itsSmall = true;
-        }
-        */
-//}        
-
 void updateStateHW(uint16_t outputs, uint16_t inputsLeds, uint16_t outputsLeds) {
     // обновление состояния выходов, индикации
     // outputs - выходы реле, inputsLeds - индикация входов, outputsLeds - индикация выходов
@@ -542,29 +477,15 @@ void updateStateHW(uint16_t outputs, uint16_t inputsLeds, uint16_t outputsLeds) 
         for (uint8_t i=0; i<6; i++) {
             setI2COut(4, i, (inputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
         }
-
-        // setI2COut(4, 0, (inputsLeds & 0x1) > 0 ? 0 : 4096);    
-        // setI2COut(4, 1, (inputsLeds & 0x2) > 0 ? 0 : 4096);    
-        // setI2COut(4, 2, (inputsLeds & 0x4) > 0 ? 0 : 4096);    
-        // setI2COut(4, 3, (inputsLeds & 0x8) > 0 ? 0 : 4096);    
-        // setI2COut(4, 4, (inputsLeds & 0x10) > 0 ? 0 : 4096);    
-        // setI2COut(4, 5, (inputsLeds & 0x20) > 0 ? 0 : 4096); 
-
         for (uint8_t i=0; i<4; i++) {
             setI2COut(4, i+6, (inputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
         }
-
-        // setI2COut(4, 6, (outputsLeds & 0x1) > 0 ? 0 : 4096); 
-        // setI2COut(4, 7, (outputsLeds & 0x2) > 0 ? 0 : 4096);    
-        // setI2COut(4, 8, (outputsLeds & 0x4) > 0 ? 0 : 4096);    
-        // setI2COut(4, 9, (outputsLeds & 0x8) > 0 ? 0 : 4096);
     } else if (controllerType == RCV2B) {   
         setRelayValues(outputs);
 
         for (uint8_t i=0; i<16; i++) {
             setI2COut(4, i, (inputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
         }
-
         for (uint8_t i=0; i<12; i++) {
             setI2COut(7, i, (outputsLeds & (0x1 << i) ) > 0 ? 0 : 4096);        
         }

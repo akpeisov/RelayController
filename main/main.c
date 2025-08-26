@@ -10,7 +10,7 @@
 #include "network.h"
 #include "storage.h"
 #include "webserver.h"
-#include "settings.h"
+#include "config.h"
 
 #include "driver/gpio.h"
 // #define CONFIG_LOG_MAXIMUM_LEVEL INFO
@@ -44,8 +44,9 @@ void app_main(void)
     ESP_LOGI(TAG, "--= RelayController =--");
     sem = xSemaphoreCreateMutex();
     initStorage(sem);
-    loadSettings();
+    loadConfig();
     initNetwork(&networkHandler);
+//printConfig();
     if (initCore(sem) == ESP_OK) 
     	startNetwork();     
 }

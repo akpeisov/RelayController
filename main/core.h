@@ -1,3 +1,4 @@
+#define SS(s) (s!=NULL?s:"")
 void runWebServer();
 void initWS();
 void initMQTT();
