@@ -186,7 +186,7 @@ cJSON* getDeviceInfoJson() {
     cJSON *status = cJSON_CreateObject();    
     char *uptime = getUpTime();
     char *curdate = getCurrentDateTime("%d.%m.%Y %H:%M:%S");
-    char *hostname = getConfigValueString("hostname");
+    char *hostname = getConfigValueString("name");
     char *description = getConfigValueString("description");
     char *version = getCurrentVersion();
     char *ethip = getETHIPStr();
@@ -223,7 +223,7 @@ void sendInfo() {
     }
     if (mqttConnected) {
         char topic[50] = {0};
-        strcpy(topic, getConfigValueString("hostname"));
+        strcpy(topic, getConfigValueString("name"));
         if (strlen(topic) == 0) {
             strcpy(topic, "unknown");
         }
@@ -416,16 +416,17 @@ void sendWSUpdateInput(uint8_t pSlaveId, uint8_t pInput, char* pState) {
 }
 
 void publishOutput(uint8_t pSlaveId, uint8_t pOutput, char* pValue, uint8_t pTimer) {
-    // TODO: publish on websocket and mqtt    
-    //if (!mbSlave)
-        sendWSUpdateOutput(pSlaveId, pOutput, pValue, pTimer);
+    sendWSUpdateOutput(pSlaveId, pOutput, pValue, pTimer);
 
     if (mqttConnected) {
         char topic[50] = {0};
+        // hostname/outputs/slaveId/output
+        sprintf(topic, "%s/outputs/%d/%d", getConfigValueString("name"), pSlaveId, pOutput);
+        /*
         char buf[5];
-        strcpy(topic, getConfigValueString("hostname"));
+        strcpy(topic, getConfigValueString("name"));
         if (strlen(topic) == 0) {
-            strcpy(topic, "unknown");
+            strcpy(topic, getMac());
         }
         strcat(topic, "/outputs/");
         itoa(pSlaveId, buf, 10);
@@ -434,17 +435,26 @@ void publishOutput(uint8_t pSlaveId, uint8_t pOutput, char* pValue, uint8_t pTim
         itoa(pOutput, buf, 10);
         strcat(topic, buf); 
         strcat(topic, "\0");   
+        */
+        // напрямую toUpper вызывает ошибку
         char actionUpper[10];
         strcpy(actionUpper, pValue);    
-        strcat(actionUpper, "\0");   
+        strcat(actionUpper, "\0");           
         MQTTPublish(topic, toUpper(actionUpper));        
     }
 }
 
 void publishInput(uint8_t pInput, char* pState, uint8_t pSlaveId) {
-    // TODO: publish on websocket and mqtt
-    if (!mbSlave)
-        sendWSUpdateInput(pSlaveId, pInput, pState);
+    sendWSUpdateInput(pSlaveId, pInput, pState);
+    if (mqttConnected) {
+        char topic[50] = {0};
+        // hostname/inputs/slaveId/output
+        sprintf(topic, "%s/inputs/%d/%d", getConfigValueString("name"), pSlaveId, pInput);
+        char actionUpper[15];
+        strcpy(actionUpper, pState);    
+        strcat(actionUpper, "\0");           
+        MQTTPublish(topic, toUpper(actionUpper));        
+    }
 }
 
 char* getOutputState(uint8_t pOutput) {
@@ -1452,14 +1462,14 @@ void runWebServer() {
 	initWebServer(1);	
 }
 
-char* getIOConfigMsg() {
-    char *response;
-    cJSON *json = cJSON_CreateObject();
-    cJSON_AddItemToObject(json, "type", cJSON_CreateString("IOConfig"));
-    cJSON_AddItemToObject(json, "payload", IOConfig);
-    response = cJSON_PrintUnformatted(json);    
-    return response;
-}
+// char* getIOConfigMsg() {
+//     char *response;
+//     cJSON *json = cJSON_CreateObject();
+//     cJSON_AddItemToObject(json, "type", cJSON_CreateString("IOConfig"));
+//     cJSON_AddItemToObject(json, "payload", IOConfig);
+//     response = cJSON_PrintUnformatted(json);    
+//     return response;
+// }
 
 // bool mbSlaveIdExists(int slaveId) {
 //     cJSON *slave = NULL;
@@ -1738,32 +1748,28 @@ void wsMsg(char *message) {
         } else if (!strcmp(type, "INFO")) {       
             // запрос информации   
             sendInfo();            
-        } else if (!strcmp(type, "GETIOConfig")) {
-            response = getIOConfigMsg();
+        } else if (!strcmp(type, "GETDEVICECONFIG")) {
+            response = getConfigMsg();//getIOConfigMsg();
             WSSendMessageForce(response);
             free(response);                     
-        } else if (!strcmp(type, "SETIOConfig") && payload != NULL) {
-            ESP_LOGW(TAG, "Updating device config");
-            if (cJSON_IsObject(payload)) {
-                SemaphoreHandle_t sem = getSemaphore();
-                if (xSemaphoreTake(sem, portMAX_DELAY) == pdTRUE) {
-                    cJSON_Delete(IOConfig);
-                    cJSON_DetachItemFromObject(json, "payload");
-                    IOConfig = payload;
-                    correctIOConfig();
-                    xSemaphoreGive(sem);
-                    saveConfig();
-                }
-                ESP_LOGI(TAG, "IOConfig is object %d", cJSON_IsObject(IOConfig));
-                WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"OK\"}}");
-            } else {
-                // TODO : send error to WS
-                WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"Ne OK\"}}");
-            }
-        // } else if (!strcmp(type, "UPDATEOUTPUT") && payload != NULL) {
-        //     updateOutput(payload);
-        // } else if (!strcmp(type, "UPDATEINPUT") && payload != NULL) {
-        //     updateInput(payload);    
+        // } else if (!strcmp(type, "SETIOConfig") && payload != NULL) {
+        //     ESP_LOGW(TAG, "Updating device config");
+        //     if (cJSON_IsObject(payload)) {
+        //         SemaphoreHandle_t sem = getSemaphore();
+        //         if (xSemaphoreTake(sem, portMAX_DELAY) == pdTRUE) {
+        //             cJSON_Delete(IOConfig);
+        //             cJSON_DetachItemFromObject(json, "payload");
+        //             IOConfig = payload;
+        //             correctIOConfig();
+        //             xSemaphoreGive(sem);
+        //             saveConfig();
+        //         }
+        //         ESP_LOGI(TAG, "IOConfig is object %d", cJSON_IsObject(IOConfig));
+        //         WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"OK\"}}");
+        //     } else {
+        //         // TODO : send error to WS
+        //         WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"Ne OK\"}}");
+        //     }
         } else if (!strcmp(type, "ACTION") && payload != NULL) {
             if (cJSON_IsString(cJSON_GetObjectItem(payload, "mac")) &&
                 strcmp(toUpper(cJSON_GetObjectItem(payload, "mac")->valuestring), getMac())) {
@@ -1899,10 +1905,56 @@ void mqttEvent(uint8_t event) {
 void mqttData(char* topic, char* data) {
     ESP_LOGW(TAG, "parseTopic %s %s", topic, data);
     char str[100];
-    strcpy(str, getConfigValueString("hostname"));
+    strcpy(str, getConfigValueString("name"));
     strcat(str, "/in/\0");
     if (!strstr(topic, str)) {
         // это не топики своего устройства. Проверить внешний список
+        if (cJSON_IsArray(jMQTTTopics)) {
+            cJSON *childTopic = jMQTTTopics->child;
+            while (childTopic) { 
+                if (cJSON_IsString(cJSON_GetObjectItem(childTopic, "topic")) &&
+                    !strcmp(topic, cJSON_GetObjectItem(childTopic, "topic")->valuestring)) {
+                    if (cJSON_IsArray(cJSON_GetObjectItem(childTopic, "events"))) {
+                        cJSON *childEvent = cJSON_GetObjectItem(childTopic, "events")->child;
+                        while (childEvent) { 
+                            if (cJSON_IsString(cJSON_GetObjectItem(childEvent, "event")) &&
+                                !strcasecmp(data, cJSON_GetObjectItem(childEvent, "event")->valuestring)) {
+                                if (cJSON_IsString(cJSON_GetObjectItem(childEvent, "action")) &&
+                                    cJSON_IsString(cJSON_GetObjectItem(childEvent, "type"))) {
+                                    if (!strcmp("out", cJSON_GetObjectItem(childEvent, "type")->valuestring) &&
+                                        cJSON_IsNumber(cJSON_GetObjectItem(childEvent, "output"))) {
+                                        uint8_t output = cJSON_GetObjectItem(childEvent, "output")->valueint;
+                                        char *action = cJSON_GetObjectItem(childEvent, "action")->valuestring;
+                                        uint8_t slaveId = 0;
+                                        if (cJSON_IsNumber(cJSON_GetObjectItem(childEvent, "slaveId"))) {
+                                            slaveId = cJSON_GetObjectItem(childEvent, "slaveId")->valueint;
+                                        }                                    
+                                        if (slaveId) {
+                                            setRemoteOutput(slaveId, output, action);            
+                                        } else {
+                                            setOutput(output, action);
+                                        }    
+                                    } else if (!strcmp("in", cJSON_GetObjectItem(childEvent, "type")->valuestring) &&
+                                        cJSON_IsNumber(cJSON_GetObjectItem(childEvent, "input"))) {
+                                        uint8_t input = cJSON_GetObjectItem(childEvent, "input")->valueint;
+                                        char *action = cJSON_GetObjectItem(childEvent, "action")->valuestring;
+                                        uint8_t slaveId = 0;
+                                        if (cJSON_IsNumber(cJSON_GetObjectItem(childEvent, "slaveId"))) {
+                                            slaveId = cJSON_GetObjectItem(childEvent, "slaveId")->valueint;
+                                        }            
+                                        processInputEvents(slaveId, input, action, 255);                                                        
+                                    }
+                                }                                
+                            }
+                            childEvent = childEvent->next;
+                        }
+                    }
+                    break;
+                }
+                childTopic = childTopic->next;
+            }    
+        }
+        /*
         if (cJSON_IsArray(jMQTTTopics)) {
             cJSON *childTopic = jMQTTTopics->child;
             while (childTopic) { 
@@ -1936,6 +1988,7 @@ void mqttData(char* topic, char* data) {
                 childTopic = childTopic->next;
             }    
         }
+        */
         return;
         /*
         [{
@@ -2024,8 +2077,8 @@ int custom_vprintf(const char *fmt, va_list args) {
         char log_buffer[256];    
         vsnprintf(log_buffer, sizeof(log_buffer), fmt, args);
         cJSON *json = cJSON_CreateObject();        
-        cJSON_AddItemToObject(json, "type", cJSON_CreateString("LOG"));
-        cJSON_AddItemToObject(json, "payload", cJSON_CreateString(log_buffer));
+        cJSON_AddStringToObject(json, "type", "LOG");
+        cJSON_AddStringToObject(json, "payload", log_buffer);
         char *jsonStr = cJSON_PrintUnformatted(json);
         WSSendMessage(jsonStr);
         free(jsonStr);
@@ -2037,7 +2090,7 @@ int custom_vprintf(const char *fmt, va_list args) {
 void initMQTT() {
     if (getConfigValueBool("mqtt/enabled")) {
         jMQTTTopics = getConfigValueObject("mqtt/topics");
-        MQTTInit(&mqttData, &mqttEvent);
+        MQTTInit(&mqttData, &mqttEvent, jMQTTTopics);
     }
 }
 
@@ -2059,7 +2112,7 @@ void sntpEvent() {
 esp_err_t initCore(SemaphoreHandle_t sem) {
 	//createSemaphore();
     setRGBFace("yellow");
-    char *hostname = getConfigValueString("hostname");
+    char *hostname = getConfigValueString("name");
     char *description = getConfigValueString("description");    
     ESP_LOGI(TAG, "Hostname %s, description %s", SS(hostname), SS(description));
 
@@ -2077,7 +2130,7 @@ esp_err_t initCore(SemaphoreHandle_t sem) {
         (cJSON_IsObject(IOConfig) && !cJSON_IsArray(cJSON_GetObjectItem(IOConfig, "inputs"))) ) {
         createIOConfig();
         bool res = setConfigValueObject("io", IOConfig);
-        ESP_LOGI(TAG, "save result %d", res);
+        ESP_LOGI(TAG, "IOConfig set result %d", res);
         saveConfig();
     }    
     initModBus();
@@ -2117,29 +2170,3 @@ esp_err_t initCore(SemaphoreHandle_t sem) {
 * переделать type wait на action wait и на бэке тоже
 * когда по умолчанию выход был активен то надо чтобы реле щелкнуло, иначе оно будет просто "петь"
 */
-
-/* modbus
-+ на мастере в основной конфиг добавляются входы и выходы слейвов
-- при редактировании входов и выходов через WS или рест необходимо будет отправлять конфигурацию на слейвы
-+ события со всех слейвов приходят на мастер
-+ события улетают в ws/mqtt
-+ слейвы отрабатывают свои правила сами
-- придумать как передавать конфиг от мастера и обратно (Может это делать через UI?)
-- слейвы могут быть подключены к интернету, но тогда они не шлют сообщения WS. Шлет только мастер
-- на бэкэнде это как будет выглядеть?
-
-[
-{
-    "slaveId": 1,
-    "enabled": true,
-    "outputsState": 0,
-    "inputsState": 0,
-    "outputs": [
-
-    ],
-    "inputs": [
-    ]
-}
-]
-*/
-
