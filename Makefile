@@ -3,7 +3,7 @@
 # project subdirectory.
 #
 
-PROJECT_NAME := TestComponent
+PROJECT_NAME := RelayController
 
 #EXTRA_COMPONENT_DIRS = ../components
 

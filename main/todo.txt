@@ -1,3 +1,7 @@
+(187932983) WEBSOCKET_CLIENT: Error, no PONG received for more than 120 seconds after PING
+
+
+
 + hostname сделать с суффиксом мака Device_MAC
 + определение типа контроллера аппаратно для новых версий
 + default JWT in firmware

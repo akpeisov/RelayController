@@ -10,6 +10,7 @@
 #include "cJSON.h"
 #include "utils.h"
 #include "hardware.h"
+#include "config.h"
 
 #define SDA 32
 #define SCL 33
@@ -22,6 +23,7 @@
 #define IO_EN    0
 #define IO_REN   16
 #define I2CPORT  0
+#define MAXFREQ  1526
 
 static const char *TAG = "HARDWARE";
 
@@ -31,6 +33,7 @@ static uint16_t relayBits = 0; // флаг снижения скважности
 static bool i2c = false;
 static SemaphoreHandle_t xMutex;
 static bool clockPresent = false;
+static uint16_t relPWM = 2000;
 //i2c_dev_t dev_out1, dev_out2;
 
 typedef struct {
@@ -115,15 +118,22 @@ void initHardware(SemaphoreHandle_t sem) {
 
 esp_err_t initPCA9685hw(i2c_dev_t dev, bool setValues) {
     esp_err_t err = ESP_FAIL;
+    uint16_t freq = MAXFREQ;
+    uint16_t nFreq = getConfigValueInt("hw/freq");    
+    if (nFreq > 0) //  TODO : && nFreq < MAXFREQ
+        freq = nFreq;
+    uint16_t nRelPWM = getConfigValueInt("hw/pwm");    
+    if (nRelPWM > 0)
+        relPWM = nRelPWM;
     //if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {        
         err = pca9685_init(&dev);
         if (err == ESP_OK) {
             ESP_ERROR_CHECK(pca9685_restart(&dev));
-            pca9685_set_pwm_frequency(&dev, 1500);
+            pca9685_set_pwm_frequency(&dev, freq);
             // set all to off
             if (setValues) {
                 for (int i=0;i<16;i++) {
-                    pca9685_set_pwm_value(&dev, i, 4096);    	
+                    pca9685_set_pwm_value(&dev, i, 0);    	
                 }
             }
         }        
@@ -162,7 +172,7 @@ uint8_t readFrom8574(uint8_t adr) {
 
 void setRGBFace(char* color) {
     if (!i2c) return;
-    uint16_t min = 2000;  
+    uint16_t min = 1500;  
     uint8_t dev = 0;
     uint8_t r = 0, g = 0, b = 0;  
     if (controllerType == RCV2S) {
@@ -211,7 +221,7 @@ void relayTask(void *pvParameter) {
                 if (testbit(relayValues, i) && !testbit(relayPrepareBits, i)) {                
                     setbit(relayPrepareBits, i);
                 } else if (testbit(relayValues, i) && !testbit(relayBits, i)) {
-                    setI2COut(3, i, 2000); // снижаем скважность
+                    setI2COut(3, i, relPWM); // снижаем скважность
                     setbit(relayBits, i);
                 }
             }
@@ -277,7 +287,7 @@ esp_err_t initPCA9685(uint8_t devNum, uint8_t *foundDevices, uint8_t devicesCoun
     esp_err_t err = ESP_ERR_NOT_FOUND;
     if (isInArray(foundDevices, devicesCount, devices[devNum].address)) {
         pca9685_init_desc(&devices[devNum].device, devices[devNum].address, I2CPORT, SDA, SCL);
-        err = initPCA9685hw(devices[devNum].device, false);
+        err = initPCA9685hw(devices[devNum].device, true);
         if (err == ESP_OK)
             ESP_LOGI(TAG, "PCA9685 with address 0x%x inited OK", devices[devNum].address);
         else

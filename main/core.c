@@ -28,6 +28,7 @@ static bool wsConnected = false;
 static bool wsSendLogs = false;
 static uint8_t mbSlaveId = 0;
 static char* mbMode = "";
+static esp_reset_reason_t resetReason;
 
 extern const char jwt_start[] asm("_binary_jwt_pem_start");
 extern const char jwt_end[] asm("_binary_jwt_pem_end");
@@ -64,6 +65,8 @@ void determinateControllerType() {
         } else {
             controllerType = RCV1S; // by default
         }
+        // write to config
+        setConfigValueString("controllerType", controllersData[controllerType].name);
     }        
 }
 
@@ -162,6 +165,35 @@ esp_err_t createIOConfig() {
     return ESP_OK;
 }
 
+const char* esp_reset_reason_to_string(esp_reset_reason_t reason) {
+    switch (reason) {
+        case ESP_RST_UNKNOWN:
+            return "Unknown reset reason";
+        case ESP_RST_POWERON:
+            return "Power on reset";
+        case ESP_RST_EXT:
+            return "External pin reset";
+        case ESP_RST_SW:
+            return "Software reset";
+        case ESP_RST_PANIC:
+            return "Panic/exception reset";
+        case ESP_RST_INT_WDT:
+            return "Internal watchdog reset";
+        case ESP_RST_TASK_WDT:
+            return "Task watchdog reset";
+        case ESP_RST_WDT:
+            return "Reset due to other watchdogs";
+        case ESP_RST_DEEPSLEEP:
+            return "Reset after exiting deep sleep mode";    
+        case ESP_RST_BROWNOUT:
+            return "Brownout reset";
+        case ESP_RST_SDIO:
+            return "SDIO reset";
+        default:
+            return "Unknown/Invalid reset reason";
+    }
+}
+
 void serviceTask(void *pvParameter) {
     ESP_LOGI(TAG, "Creating service task");
     // uint32_t minMem = getConfigValueInt("watchdog", "wdtmemsize");
@@ -204,6 +236,7 @@ cJSON* getDeviceInfoJson() {
     cJSON_AddItemToObject(status, "ethIP", cJSON_CreateString(ethip));
     cJSON_AddItemToObject(status, "wifiIP", cJSON_CreateString(wifiip));      
     cJSON_AddItemToObject(status, "model", cJSON_CreateString(controllersData[controllerType].name));      
+    cJSON_AddItemToObject(status, "resetReason", cJSON_CreateString(esp_reset_reason_to_string(resetReason)));          
     free(uptime);
     free(curdate);  
     free(version);
@@ -677,6 +710,8 @@ bool checkACL(cJSON *acls) {
 void processInputEvents(uint8_t pSlaveId, uint8_t pInput, char* pEvent, uint8_t i) {
     // TODO : обработать i
 	// обработка события на входе/кнопке    
+    ESP_LOGI(TAG, "processInputEvents. Input %d, event %s, slaveId %d",
+             pInput, pEvent, pSlaveId);
     cJSON *childInput = cJSON_GetObjectItem(IOConfig, "inputs")->child;
     while (childInput) {
         uint8_t slaveId = 0; // определяем slaveId. Для мастера будет 0
@@ -751,6 +786,7 @@ void processInputEvents(uint8_t pSlaveId, uint8_t pInput, char* pEvent, uint8_t 
         publishInput(pInput, pEvent, 0);    
     }   
 
+    // for link controller
     if (pInput == 16 && !strcmp(pEvent, "longpress")) {
         publishInput(pInput, pEvent, 0);    
     }
@@ -1379,10 +1415,13 @@ esp_err_t uiRouter(httpd_req_t *req) {
         } else if (req->method == HTTP_POST) {
             err = getContent(&content, req);
             if (err == ESP_OK) {
-                err = setConfig(&response, content); 
-                // IO config    
-                IOConfig = getConfigValueObject("io");           
-                // TODO : other configs?
+                SemaphoreHandle_t sem = getSemaphore();
+                if (xSemaphoreTake(sem, portMAX_DELAY) == pdTRUE) {
+                    err = setConfig(&response, content); 
+                    // IO config    
+                    IOConfig = getConfigValueObject("io");           
+                    xSemaphoreGive(sem);
+                }
             }
         }        
     } else if (!strcmp(uri, "/service/file")) {
@@ -1572,6 +1611,12 @@ void correctIOConfig() {
     // корректировка конфига устройства
     // проверить наличие всех выходов, входов и кнопок относительно модели контроллера
     bool changed = false;
+    if (!getConfigValueBool("modbus/enabled")) {
+        mbMode = "";
+    } else {
+        mbMode = getConfigValueString("modbus/mode");
+    }
+
     ESP_LOGI(TAG, "correctIOConfig mbMode %s. Max outputs %d. Max inputs %d", 
              mbMode, controllersData[controllerType].outputs,
              controllersData[controllerType].inputs);
@@ -1730,7 +1775,8 @@ void wsMsg(char *message) {
     cJSON *payload = NULL;
     if(!cJSON_IsObject(json)) {
         ESP_LOGE(TAG, "WS Message isn't json");
-        return;
+        WSSendMessageForce("{\"type\":\"ERROR\", \"payload\": {\"message\": \"WS Message isn't json\"}}"); // TODO : Serialize it
+        return; 
     }
     //ESP_LOGI(TAG, "%s", message);
     if (cJSON_IsObject(cJSON_GetObjectItem(json, "payload"))) {
@@ -1751,25 +1797,28 @@ void wsMsg(char *message) {
         } else if (!strcmp(type, "GETDEVICECONFIG")) {
             response = getConfigMsg();//getIOConfigMsg();
             WSSendMessageForce(response);
-            free(response);                     
-        // } else if (!strcmp(type, "SETIOConfig") && payload != NULL) {
-        //     ESP_LOGW(TAG, "Updating device config");
-        //     if (cJSON_IsObject(payload)) {
-        //         SemaphoreHandle_t sem = getSemaphore();
-        //         if (xSemaphoreTake(sem, portMAX_DELAY) == pdTRUE) {
-        //             cJSON_Delete(IOConfig);
-        //             cJSON_DetachItemFromObject(json, "payload");
-        //             IOConfig = payload;
-        //             correctIOConfig();
-        //             xSemaphoreGive(sem);
-        //             saveConfig();
-        //         }
+            free(response);        
+        } else if (!strcmp(type, "SETDEVICECONFIG") && payload != NULL) {                         
+            ESP_LOGW(TAG, "Updating device config");
+            if (cJSON_IsObject(payload)) {
+                SemaphoreHandle_t sem = getSemaphore();
+                if (xSemaphoreTake(sem, portMAX_DELAY) == pdTRUE) {
+                    //cJSON_Delete(IOConfig);
+                    cJSON_DetachItemFromObject(json, "payload");
+                    replaceConfig(payload);       
+                    if (getConfigValueString("model") != NULL)
+                        setConfigValueString("controllerType", getConfigValueString("model"));
+                    // IO config    
+                    IOConfig = getConfigValueObject("io");    
+                    correctIOConfig();
+                    xSemaphoreGive(sem);
+                    saveConfig();
+                }
         //         ESP_LOGI(TAG, "IOConfig is object %d", cJSON_IsObject(IOConfig));
-        //         WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"OK\"}}");
-        //     } else {
-        //         // TODO : send error to WS
-        //         WSSendMessageForce("{\"type\":\"SETIOConfig\", \"payload\": {\"message\": \"Ne OK\"}}");
-        //     }
+                WSSendMessageForce("{\"type\":\"DEVICECONFIGRESPONSE\", \"payload\": {\"message\": \"OK\"}}");
+            } else {        
+                WSSendMessageForce("{\"type\":\"DEVICECONFIGRESPONSE\", \"payload\": {\"message\": \"Ne OK\"}}");
+            }
         } else if (!strcmp(type, "ACTION") && payload != NULL) {
             if (cJSON_IsString(cJSON_GetObjectItem(payload, "mac")) &&
                 strcmp(toUpper(cJSON_GetObjectItem(payload, "mac")->valuestring), getMac())) {
@@ -2112,6 +2161,7 @@ void sntpEvent() {
 esp_err_t initCore(SemaphoreHandle_t sem) {
 	//createSemaphore();
     setRGBFace("yellow");
+    resetReason = esp_reset_reason();
     char *hostname = getConfigValueString("name");
     char *description = getConfigValueString("description");    
     ESP_LOGI(TAG, "Hostname %s, description %s", SS(hostname), SS(description));
@@ -2147,7 +2197,7 @@ esp_err_t initCore(SemaphoreHandle_t sem) {
     startInputTask();
     initScheduler();	    
     esp_log_set_vprintf(&custom_vprintf);
-    setRGBFace("green"); // TODO : сделать зеленый когда все поднялось. И продумать цвета
+    setRGBFace("green"); // TODO : сделать зеленый когда все поднялось. И продумать цвета    
     return ESP_OK;
 }
 
