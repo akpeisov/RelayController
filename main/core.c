@@ -29,6 +29,7 @@ static bool wsSendLogs = false;
 static uint8_t mbSlaveId = 0;
 static char* mbMode = "";
 static esp_reset_reason_t resetReason;
+static bool gWSTimeSet = false;
 
 extern const char jwt_start[] asm("_binary_jwt_pem_start");
 extern const char jwt_end[] asm("_binary_jwt_pem_end");
@@ -1644,7 +1645,7 @@ void correctIOConfig() {
             changed = true;
         }
     }
-
+    ESP_LOGI(TAG, "correctIOConfig deleting orphan inputs");
     // удаление лишних входов
     cJSON *inputs = cJSON_GetObjectItem(IOConfig, "inputs");    
     size = cJSON_GetArraySize(inputs);
@@ -1670,6 +1671,7 @@ void correctIOConfig() {
         }
     }
  
+    ESP_LOGI(TAG, "correctIOConfig adding new outputs");
     char *name = NULL;
     name = malloc(25);
     // Добавление недостающих outputs 
@@ -1686,6 +1688,7 @@ void correctIOConfig() {
             changed = true;
         }
     }
+    ESP_LOGI(TAG, "correctIOConfig adding new inputs");
     // Добавление недостающих inputs
     for (uint8_t i = 0; i < controllersData[controllerType].inputs; i++) {
         if (!inputExists(i, 0)) {
@@ -1700,6 +1703,7 @@ void correctIOConfig() {
             changed = true;
         }
     }
+    ESP_LOGI(TAG, "correctIOConfig adding new buttons");
     // Добавление недостающих buttons
     for (uint8_t i = 16; i < 16 + controllersData[controllerType].buttons; i++) {
         if (!buttonExists(i)) {
@@ -1716,11 +1720,15 @@ void correctIOConfig() {
 
     // modbus
     // добавить модбас выходы всех устройств
+    ESP_LOGI(TAG, "correctIOConfig adding new modbus io");
     uint8_t inputsQty, outputsQty;
     cJSON *slave = NULL;
+    mbSlaves = getConfigValueObject("modbus/slaves");
     cJSON_ArrayForEach(slave, mbSlaves) {
+        ESP_LOGI(TAG, "correctIOConfig cJSON_ArrayForEach mb slave");
         if (cJSON_IsNumber(cJSON_GetObjectItem(slave, "slaveId"))) {
             uint8_t slaveId = cJSON_GetObjectItem(slave, "slaveId")->valueint;
+            ESP_LOGI(TAG, "correctIOConfig cJSON_ArrayForEach mb slave %d", slaveId);
             inputsQty = 0;
             outputsQty = 0;
             char* model = cJSON_GetObjectItem(slave, "model")->valuestring;
@@ -1761,14 +1769,45 @@ void correctIOConfig() {
     }
 
     free(name);
+    ESP_LOGI(TAG, "correctIOConfig done");
     if (changed) {
         ESP_LOGI(TAG, "Config changed. Saving");
         saveConfig();
     }
 }
 
+void setWSTime(char *datetime) {
+    gWSTimeSet = true;
+    ESP_LOGI(TAG, "WSTimeset. Current datetime %s", datetime);
+    struct tm tm_time = {0};
+    if (sscanf(datetime, "%2d-%2d-%4d %2d:%2d:%2d",
+               &tm_time.tm_mday,
+               &tm_time.tm_mon,
+               &tm_time.tm_year,
+               &tm_time.tm_hour,
+               &tm_time.tm_min,
+               &tm_time.tm_sec) != 6) {
+        ESP_LOGE(TAG, "Invalid date format");
+        return;
+    }
+
+    tm_time.tm_mon  -= 1;         // tm_mon: 0-11
+    tm_time.tm_year -= 1900;      // tm_year: years since 1900
+
+    time_t t = mktime(&tm_time);
+
+    struct timeval now = {
+        .tv_sec = t,
+        .tv_usec = 0
+    };
+
+    settimeofday(&now, NULL);
+
+    ESP_LOGI(TAG, "Time set to: %s", datetime);
+}
+
 void wsMsg(char *message) {
-	ESP_LOGI(TAG, "wsMsg %s", message);
+	ESP_LOGI(TAG, "wsMsg received. Size %d, Text %s", strlen(message), message);
     char *response;
     char *type;
     cJSON *json = cJSON_Parse(message); 
@@ -1791,6 +1830,11 @@ void wsMsg(char *message) {
             response = getDeviceIOStates();
             WSSendMessage(response);  
             free(response);
+        } else if (!strcmp(type, "TIME") && cJSON_IsString(cJSON_GetObjectItem(json, "payload"))) {
+            // set time
+            setWSTime(cJSON_GetObjectItem(json, "payload")->valuestring);
+            // after time is set we can send hello and start session
+            sendHello();
         } else if (!strcmp(type, "INFO")) {       
             // запрос информации   
             sendInfo();            
@@ -1811,8 +1855,7 @@ void wsMsg(char *message) {
                     // IO config    
                     IOConfig = getConfigValueObject("io");    
                     correctIOConfig();
-                    xSemaphoreGive(sem);
-                    saveConfig();
+                    xSemaphoreGive(sem);                    
                 }
         //         ESP_LOGI(TAG, "IOConfig is object %d", cJSON_IsObject(IOConfig));
                 WSSendMessageForce("{\"type\":\"DEVICECONFIGRESPONSE\", \"payload\": {\"message\": \"OK\"}}");
@@ -1874,7 +1917,7 @@ void wsEvent(uint8_t event) {
     if (event == WEBSOCKET_EVENT_CONNECTED) {
         wsConnected = true;
         //sendInfo();
-        sendHello();
+        //sendHello();
     } else if (event == WEBSOCKET_EVENT_DISCONNECTED) {
         wsConnected = false;
     }
@@ -2150,6 +2193,8 @@ void initFTP(uint32_t address) {
 }
 
 void sntpEvent() {
+    if (gWSTimeSet)
+        return;
     time_t now;
     struct tm timeinfo;
     time(&now);
