@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.5)
 set(PROJECT_VER "1.0.1.31")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-set(EXTRA_COMPONENT_DIRS ../ESP32/components ../../ESP32/esp-idf-lib/components)
+set(EXTRA_COMPONENT_DIRS ../ESP32Components ../esp-idf-lib/components)
 
 project(RelayController)
 

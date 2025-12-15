@@ -1620,6 +1620,8 @@ bool buttonExists(int pId) {
 }
 
 char *getMbMode() {
+    if (getConfigValueString("modbus/mode") == NULL)
+        return "none";
     if (!strcmp(getConfigValueString("modbus/mode"), "master")) {            
         return "master";
     }
