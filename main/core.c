@@ -497,6 +497,11 @@ char* getOutputState(uint8_t pOutput) {
     }    
     cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {  
+        if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")) &&
+            (cJSON_GetObjectItem(childOutput, "slaveId")->valueint > 0)) {            
+            childOutput = childOutput->next;
+            continue;
+        }
         if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id")) &&
             (cJSON_GetObjectItem(childOutput, "id")->valueint == pOutput)) {            
             if (cJSON_IsString(cJSON_GetObjectItem(childOutput, "state")))
@@ -538,6 +543,12 @@ void setOutput(uint8_t pOutput, char* pValue) {
     uint16_t oLimit = 0;
     cJSON *childOutput = cJSON_GetObjectItem(IOConfig, "outputs")->child;
     while (childOutput) {
+        // skip all slaves
+        if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "slaveId")) &&
+            (cJSON_GetObjectItem(childOutput, "slaveId")->valueint > 0)) {
+            childOutput = childOutput->next;
+            continue;
+        }
         if (cJSON_IsNumber(cJSON_GetObjectItem(childOutput, "id")) &&
             (cJSON_GetObjectItem(childOutput, "id")->valueint == pOutput)) {
             cJSON_ReplaceItemInObject(childOutput, "state", cJSON_CreateString(pValue));
@@ -1608,20 +1619,34 @@ bool buttonExists(int pId) {
     return false;
 }
 
-void correctIOConfig() {
+char *getMbMode() {
+    if (!strcmp(getConfigValueString("modbus/mode"), "master")) {            
+        return "master";
+    }
+    else if (!strcmp(getConfigValueString("modbus/mode"), "slave")) {
+        return "slave";
+    }    
+    return "none";
+}
+
+void correctIOConfig(bool forceSave) {
     // корректировка конфига устройства
     // проверить наличие всех выходов, входов и кнопок относительно модели контроллера
     bool changed = false;
-    if (!getConfigValueBool("modbus/enabled")) {
-        mbMode = "";
-    } else {
-        mbMode = getConfigValueString("modbus/mode");
-    }
+    if (forceSave)
+        changed = true;
+    // if (!getConfigValueBool("modbus/enabled")) {
+    //     mbMode = "";
+    // } else {
+    //     mbMode = getConfigValueString("modbus/mode");
+    // }
 
+    mbMode = getMbMode();
     ESP_LOGI(TAG, "correctIOConfig mbMode %s. Max outputs %d. Max inputs %d", 
              mbMode, controllersData[controllerType].outputs,
              controllersData[controllerType].inputs);
 
+    mbSlaves = getConfigValueObject("modbus/slaves");
     // удаление лишних выходов
     cJSON *outputs = cJSON_GetObjectItem(IOConfig, "outputs");    
     int size = cJSON_GetArraySize(outputs);
@@ -1722,8 +1747,7 @@ void correctIOConfig() {
     // добавить модбас выходы всех устройств
     ESP_LOGI(TAG, "correctIOConfig adding new modbus io");
     uint8_t inputsQty, outputsQty;
-    cJSON *slave = NULL;
-    mbSlaves = getConfigValueObject("modbus/slaves");
+    cJSON *slave = NULL;    
     cJSON_ArrayForEach(slave, mbSlaves) {
         ESP_LOGI(TAG, "correctIOConfig cJSON_ArrayForEach mb slave");
         if (cJSON_IsNumber(cJSON_GetObjectItem(slave, "slaveId"))) {
@@ -1854,7 +1878,7 @@ void wsMsg(char *message) {
                         setConfigValueString("controllerType", getConfigValueString("model"));
                     // IO config    
                     IOConfig = getConfigValueObject("io");    
-                    correctIOConfig();
+                    correctIOConfig(true);
                     xSemaphoreGive(sem);                    
                 }
         //         ESP_LOGI(TAG, "IOConfig is object %d", cJSON_IsObject(IOConfig));
@@ -1967,14 +1991,14 @@ void initModBus() {
         if (!strcmp(getConfigValueString("modbus/mode"), "master")) {
             mbSlaves = getConfigValueObject("modbus/slaves");
             MBInitMaster(IOConfig, &modBusEvent, mbSlaves, controllerType > 2);
-            mbMode = "master";
+            //mbMode = "master";
         } else if (!strcmp(getConfigValueString("modbus/mode"), "slave")) {
             mbSlaveId = getConfigValueInt("modbus/slaveId");
             MBInitSlave(mbSlaveId, &modBusAction, controllerType > 2);
             mbSlave = true;
-            mbMode = "slave";            
+            //mbMode = "slave";            
         }
-    }    
+    }   
 }
 
 void mqttEvent(uint8_t event) {
@@ -2229,7 +2253,7 @@ esp_err_t initCore(SemaphoreHandle_t sem) {
         saveConfig();
     }    
     initModBus();
-    correctIOConfig();
+    correctIOConfig(false);
     initInputs();
 	initOutputs();    
     xTaskCreate(&serviceTask, "serviceTask", 4096, NULL, 5, NULL);    
@@ -2247,6 +2271,9 @@ esp_err_t initCore(SemaphoreHandle_t sem) {
 }
 
 /* TODO :
+не включать выходы по входам при старте, надо игнорить текущие состояния
+
+
 * scheduler
 * timer on/off
 * shooter
