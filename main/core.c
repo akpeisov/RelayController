@@ -80,17 +80,18 @@ void createSemaphore() {
 }
 
 esp_err_t createIOConfig() {
+    #define VARBUFFER 20
     ESP_LOGI(TAG, "Creating default IO config");
     IOConfig = cJSON_CreateObject(); // overwrite existing object
     // outputs
     char *name = NULL;
-    name = malloc(15);
+    name = malloc(VARBUFFER);
     
 	cJSON *outputs = cJSON_CreateArray();    
     for (uint8_t i=0; i<controllersData[controllerType].outputs; i++) {
         cJSON *output = cJSON_CreateObject();
         cJSON_AddNumberToObject(output, "id", i);
-        sprintf(name, "Out %d", i);    
+        snprintf(name, VARBUFFER, "Out %d", i);    
         cJSON_AddStringToObject(output, "name", name);
         cJSON_AddStringToObject(output, "type", "s");
         cJSON_AddStringToObject(output, "state", "off");        
@@ -103,7 +104,7 @@ esp_err_t createIOConfig() {
     for (uint8_t i=0; i<controllersData[controllerType].buttons; i++) {
         cJSON *input = cJSON_CreateObject();
         cJSON_AddNumberToObject(input, "id", i+16);
-        sprintf(name, "Svc %d", i);
+        snprintf(name, VARBUFFER, "Svc %d", i);
         cJSON_AddStringToObject(input, "name", name);
         cJSON_AddStringToObject(input, "type", "BTN");
                 
@@ -127,7 +128,7 @@ esp_err_t createIOConfig() {
     for (uint8_t i=0; i<controllersData[controllerType].inputs; i++) {
         cJSON *input = cJSON_CreateObject();
         cJSON_AddNumberToObject(input, "id", i);
-        sprintf(name, "In %d", i);
+        snprintf(name, VARBUFFER, "In %d", i);
         cJSON_AddStringToObject(input, "name", name);
         cJSON_AddStringToObject(input, "type", "SW");
         

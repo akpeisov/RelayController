@@ -44,7 +44,7 @@ void app_main(void)
     ESP_LOGI(TAG, "--= RelayController =--");
     sem = xSemaphoreCreateMutex();
     initStorage(sem);
-    loadConfig();
+    initConfig();
     initNetwork(&networkHandler);
 //printConfig();
     if (initCore(sem) == ESP_OK) 
